@@ -308,8 +308,9 @@ WMTModifyPixmapHeader(PixmapPtr pPix, int width, int height, int depth,
 		if (priv->bo && priv->bo != wmt->scanout[0] &&
 		    priv->bo != wmt->scanout[1])
 			wmt_bo_destroy(wmt->fd, priv->bo);
+		free(priv->sysmem);	/* release any driver-owned buffer */
 		priv->bo = NULL;
-		priv->sysmem = NULL;	/* externally owned */
+		priv->sysmem = NULL;	/* new backing is externally owned */
 		if (devKind > 0)
 			priv->pitch = devKind;
 		pPix->devPrivate.ptr = pPixData;
@@ -445,7 +446,11 @@ WMTExaInit(ScreenPtr pScreen)
 	exa->exa_major = EXA_VERSION_MAJOR;
 	exa->exa_minor = EXA_VERSION_MINOR;
 
-	exa->flags = EXA_OFFSCREEN_PIXMAPS | EXA_HANDLES_PIXMAPS;
+	/* PREPARE_AUX: PrepareAccess ignores the index (one BO per pixmap), so we
+	 * accept the AUX_* indices EXA uses for scratch pixmaps during fallbacks.
+	 * Without this flag EXA FatalError()s on AUX access to a pinned pixmap. */
+	exa->flags = EXA_OFFSCREEN_PIXMAPS | EXA_HANDLES_PIXMAPS |
+		     EXA_SUPPORTS_PREPARE_AUX;
 	exa->maxX = WMT_GE_MAX_DIM;
 	exa->maxY = WMT_GE_MAX_DIM;
 	exa->maxPitchBytes = WMT_GE_MAX_DIM * 4;
@@ -490,16 +495,19 @@ WMTExaInit(ScreenPtr pScreen)
 	return TRUE;
 }
 
+/*
+ * Release the EXA driver record and batch buffer.  Must run *after* the
+ * wrapped exaCloseScreen has executed (exaDriverInit installs that into the
+ * CloseScreen chain and it reads the ExaDriverRec during teardown), so this is
+ * called at the tail of WMTCloseScreen rather than before the chain.
+ */
 void
 WMTExaCloseScreen(ScreenPtr pScreen)
 {
 	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(pScreen));
 
-	if (wmt->exa) {
-		exaDriverFini(pScreen);
-		free(wmt->exa);
-		wmt->exa = NULL;
-	}
 	free(wmt->batch);
 	wmt->batch = NULL;
+	free(wmt->exa);
+	wmt->exa = NULL;
 }

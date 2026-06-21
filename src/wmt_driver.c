@@ -223,7 +223,7 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 
 	pScrn->pScreen = pScreen;
 
-	if (drmSetMaster(wmt->fd))
+	if (wmt->fd_owned && drmSetMaster(wmt->fd))
 		xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
 			   "drmSetMaster failed: %s\n", strerror(errno));
 
@@ -354,16 +354,34 @@ WMTCloseScreen(ScreenPtr pScreen)
 {
 	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
 	WMTPtr wmt = WMTPTR(pScrn);
+	WMTPixmapPriv *rootpriv = NULL;
 	Bool ret;
+
+	/* Grab the root pixmap's private now: the wrapped exaCloseScreen unwraps
+	 * DestroyPixmap, so fb destroys the root pixmap without routing through
+	 * WMTDestroyPixmap and the private would otherwise leak. */
+	if (wmt->exa) {
+		PixmapPtr root = pScreen->GetScreenPixmap(pScreen);
+
+		if (root)
+			rootpriv = WMT_PIXMAP_PRIV(root);
+	}
+
+	if (wmt->fd_owned)
+		drmDropMaster(wmt->fd);
+
+	/* Run the wrapped chain first; it includes exaCloseScreen (which tears
+	 * down EXA while the ExaDriverRec is still valid) then fb's CloseScreen. */
+	pScreen->CreateScreenResources = wmt->CreateScreenResources;
+	pScreen->CloseScreen = wmt->CloseScreen;
+	ret = (*pScreen->CloseScreen)(pScreen);
 
 	if (wmt->exa)
 		WMTExaCloseScreen(pScreen);
 
-	drmDropMaster(wmt->fd);
-
-	pScreen->CreateScreenResources = wmt->CreateScreenResources;
-	pScreen->CloseScreen = wmt->CloseScreen;
-	ret = (*pScreen->CloseScreen)(pScreen);
+	/* The root pixmap's BO is a scanout buffer (freed just below); only its
+	 * small driver private needs reclaiming. */
+	free(rootpriv);
 
 	if (wmt->scanout[0])
 		wmt_bo_destroy(wmt->fd, wmt->scanout[0]);

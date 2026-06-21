@@ -411,7 +411,7 @@ WMTKMSEnterVT(ScrnInfoPtr pScrn)
 {
 	WMTPtr wmt = WMTPTR(pScrn);
 
-	if (drmSetMaster(wmt->fd)) {
+	if (wmt->fd_owned && drmSetMaster(wmt->fd)) {
 		xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
 			   "drmSetMaster failed: %s\n", strerror(errno));
 		return FALSE;
@@ -424,5 +424,6 @@ WMTKMSLeaveVT(ScrnInfoPtr pScrn)
 {
 	WMTPtr wmt = WMTPTR(pScrn);
 
-	drmDropMaster(wmt->fd);
+	if (wmt->fd_owned)
+		drmDropMaster(wmt->fd);
 }
