@@ -71,6 +71,7 @@ typedef struct {
 
 	/* EXA */
 	ExaDriverPtr	exa;
+	WMTPixmapPriv  *root_priv;	/* screen pixmap private, for teardown */
 	struct wmt_ge_op *batch;	/* op accumulation buffer              */
 	unsigned	batch_count;
 	unsigned	batch_max;

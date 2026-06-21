@@ -336,6 +336,9 @@ WMTCreateScreenResources(ScreenPtr pScreen)
 			priv->bo = wmt->scanout[0];
 			priv->pitch = wmt->scanout[0]->pitch;
 			priv->sysmem = NULL;
+			/* Remember it now (EXA is up); reclaim it at CloseScreen
+			 * without calling an EXA accessor during teardown. */
+			wmt->root_priv = priv;
 		}
 		pScreen->ModifyPixmapHeader(root, pScrn->virtualX, pScrn->virtualY,
 					    pScrn->depth, pScrn->bitsPerPixel,
@@ -354,18 +357,7 @@ WMTCloseScreen(ScreenPtr pScreen)
 {
 	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
 	WMTPtr wmt = WMTPTR(pScrn);
-	WMTPixmapPriv *rootpriv = NULL;
 	Bool ret;
-
-	/* Grab the root pixmap's private now: the wrapped exaCloseScreen unwraps
-	 * DestroyPixmap, so fb destroys the root pixmap without routing through
-	 * WMTDestroyPixmap and the private would otherwise leak. */
-	if (wmt->exa) {
-		PixmapPtr root = pScreen->GetScreenPixmap(pScreen);
-
-		if (root)
-			rootpriv = WMT_PIXMAP_PRIV(root);
-	}
 
 	if (wmt->fd_owned)
 		drmDropMaster(wmt->fd);
@@ -379,9 +371,11 @@ WMTCloseScreen(ScreenPtr pScreen)
 	if (wmt->exa)
 		WMTExaCloseScreen(pScreen);
 
-	/* The root pixmap's BO is a scanout buffer (freed just below); only its
-	 * small driver private needs reclaiming. */
-	free(rootpriv);
+	/* exaCloseScreen unwraps DestroyPixmap before fb destroys the root pixmap,
+	 * so WMTDestroyPixmap never runs for it; reclaim its private (captured at
+	 * bind time) here. Its BO is a scanout buffer, freed just below. */
+	free(wmt->root_priv);
+	wmt->root_priv = NULL;
 
 	if (wmt->scanout[0])
 		wmt_bo_destroy(wmt->fd, wmt->scanout[0]);
