@@ -1,0 +1,48 @@
+.\" shorthand for double quote that works everywhere.
+.ds q \N'34'
+.TH WMT __drivermansuffix__ __vendorversion__
+.SH NAME
+wmt \- WonderMedia WM8505 video driver
+.SH SYNOPSIS
+.nf
+.B "Section \*qDevice\*q"
+.BI "  Identifier \*q" devname \*q
+.B "  Driver \*qwmt\*q"
+\ \ ...
+.B EndSection
+.fi
+.SH DESCRIPTION
+.B wmt
+is an __xservername__ driver for the WonderMedia WM8505 display
+controller and its 2D Graphics Engine (GE).  It drives the display
+through the kernel's
+.B wmt-drm
+KMS device and accelerates solid fills and copies using the GE via
+the EXA acceleration architecture.
+.SH SUPPORTED HARDWARE
+The
+.B wmt
+driver supports the WM8505 display controller (GOVRH) and 2D Graphics
+Engine exposed by the in-kernel
+.B wmt-drm
+DRM/KMS driver.
+.SH CONFIGURATION DETAILS
+The driver is normally selected automatically by an OutputClass that
+matches the
+.B wmt-drm
+kernel driver, so no manual configuration is required.
+.PP
+The following driver
+.B Option
+flags are supported:
+.TP
+.BI "Option \*qAccel\*q \*q" boolean \*q
+Enable or disable GE acceleration.  Default: enabled.
+.TP
+.BI "Option \*qTearFree\*q \*q" boolean \*q
+Enable double-buffered, vblank-synchronised page flipping to eliminate
+tearing.  Default: enabled.
+.SH "SEE ALSO"
+__xservername__(__appmansuffix__), Xorg(__appmansuffix__), xorg.conf(__filemansuffix__)
+.SH AUTHORS
+Logan Russell.
