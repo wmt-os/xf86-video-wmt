@@ -1,0 +1,31 @@
+Source: xserver-xorg-video-wmt
+Section: x11
+Priority: optional
+Maintainer: Logan Russell <me@lrussell.net>
+Build-Depends:
+ debhelper-compat (= 13),
+ pkgconf,
+ xserver-xorg-dev (>= 2:21.1),
+ libdrm-dev,
+ xutils-dev,
+ automake,
+ libtool,
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+Homepage: https://github.com/lrussell887/xf86-video-wmt
+Vcs-Git: https://github.com/lrussell887/xf86-video-wmt.git
+Vcs-Browser: https://github.com/lrussell887/xf86-video-wmt
+
+Package: xserver-xorg-video-wmt
+Architecture: armel
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ ${xviddriver:Depends},
+Provides:
+ ${xviddriver:Provides},
+Description: X.Org X server -- WonderMedia WM8505 (GE 2D) display driver
+ This package provides the "wmt" DDX driver for WMT OS.  It drives the
+ WonderMedia WM8505 display controller through the in-kernel wmt-drm
+ KMS device and accelerates 2D solid fills and copies on the WM8505
+ Graphics Engine (GE) via the EXA acceleration architecture.

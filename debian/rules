@@ -1,0 +1,9 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@ --with xsf
+
+override_dh_auto_install:
+	dh_auto_install
+	# X.Org modules ship no .la files
+	find debian -name '*.la' -delete
