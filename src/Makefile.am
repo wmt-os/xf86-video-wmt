@@ -16,4 +16,5 @@ wmt_drv_la_SOURCES = \
 	wmt_driver.c \
 	wmt_kms.c \
 	wmt_bo.c \
-	wmt_exa.c
+	wmt_exa.c \
+	wmt_present.c

@@ -48,13 +48,11 @@ static void WMTFreeScreen(ScrnInfoPtr pScrn);
 typedef enum {
 	OPTION_ACCEL,
 	OPTION_TEARFREE,
-	OPTION_SW_CURSOR,
 } WMTOpts;
 
 static const OptionInfoRec WMTOptions[] = {
 	{ OPTION_ACCEL,		"Accel",	OPTV_BOOLEAN, {0}, FALSE },
 	{ OPTION_TEARFREE,	"TearFree",	OPTV_BOOLEAN, {0}, FALSE },
-	{ OPTION_SW_CURSOR,	"SWcursor",	OPTV_BOOLEAN, {0}, FALSE },
 	{ -1,			NULL,		OPTV_NONE,    {0}, FALSE },
 };
 
@@ -218,7 +216,7 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 {
 	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
 	WMTPtr wmt = WMTPTR(pScrn);
-	WMTBO *bo;
+	int w = pScrn->virtualX, h = pScrn->virtualY;
 	VisualPtr visual;
 
 	pScrn->pScreen = pScreen;
@@ -227,24 +225,40 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 		xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
 			   "drmSetMaster failed: %s\n", strerror(errno));
 
-	/* Front scanout buffer. */
-	bo = wmt_bo_create(wmt->fd, pScrn->virtualX, pScrn->virtualY);
-	if (!bo) {
+	/*
+	 * Displayed scanout buffer.  With TearFree there is also a second scanout
+	 * to flip to and an off-screen shadow the root renders into; otherwise the
+	 * root renders straight into the single displayed buffer.  TearFree needs
+	 * the GE to present, so it implies acceleration.
+	 */
+	if (!wmt->accel)
+		wmt->tearfree = FALSE;
+
+	wmt->scanout[0] = wmt_bo_new(wmt->fd, w, h, TRUE);
+	if (!wmt->scanout[0]) {
 		xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
 			   "Failed to allocate scanout buffer\n");
 		return FALSE;
 	}
-	if (!wmt_bo_add_fb(wmt->fd, bo) || !wmt_bo_map(wmt->fd, bo)) {
-		xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
-			   "Failed to set up scanout framebuffer\n");
-		wmt_bo_destroy(wmt->fd, bo);
-		return FALSE;
-	}
-	memset(bo->map, 0, bo->size);
-	wmt->scanout[0] = bo;
-	wmt->nscanout = 1;
 	wmt->current = 0;
-	pScrn->displayWidth = bo->pitch / 4;
+	pScrn->displayWidth = wmt->scanout[0]->pitch / 4;
+
+	if (wmt->tearfree) {
+		wmt->scanout[1] = wmt_bo_new(wmt->fd, w, h, TRUE);
+		wmt->screen_bo = wmt_bo_new(wmt->fd, w, h, FALSE);
+		if (!wmt->scanout[1] || !wmt->screen_bo) {
+			xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
+				   "TearFree buffer allocation failed; disabling it\n");
+			if (wmt->scanout[1])
+				wmt_bo_destroy(wmt->fd, wmt->scanout[1]);
+			if (wmt->screen_bo)
+				wmt_bo_destroy(wmt->fd, wmt->screen_bo);
+			wmt->scanout[1] = wmt->screen_bo = NULL;
+			wmt->tearfree = FALSE;
+		}
+	}
+	if (!wmt->screen_bo)
+		wmt->screen_bo = wmt->scanout[0];
 
 	miClearVisualTypes();
 	if (!miSetVisualTypes(pScrn->depth, miGetDefaultVisualMask(pScrn->depth),
@@ -253,7 +267,10 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 	if (!miSetPixmapDepths())
 		return FALSE;
 
-	if (!fbScreenInit(pScreen, bo->map, pScrn->virtualX, pScrn->virtualY,
+	/* Pass NULL so EXA owns the front pixmap (an unpinned MIXED pixmap that
+	 * can take a GE-addressable copy) rather than pinning it to the scanout
+	 * mapping as plain system memory. */
+	if (!fbScreenInit(pScreen, NULL, pScrn->virtualX, pScrn->virtualY,
 			  pScrn->xDpi, pScrn->yDpi, pScrn->displayWidth,
 			  pScrn->bitsPerPixel))
 		return FALSE;
@@ -323,31 +340,18 @@ WMTCreateScreenResources(ScreenPtr pScreen)
 	if (!ret)
 		return FALSE;
 
-	/* Point the root pixmap at the front scanout buffer so the GE can
-	 * accelerate drawing straight to the screen. */
-	if (wmt->accel && wmt->exa) {
-		PixmapPtr root = pScreen->GetScreenPixmap(pScreen);
-		WMTPixmapPriv *priv = WMT_PIXMAP_PRIV(root);
-
-		if (priv) {
-			if (priv->bo && priv->bo != wmt->scanout[0] &&
-			    priv->bo != wmt->scanout[1])
-				wmt_bo_destroy(wmt->fd, priv->bo);
-			priv->bo = wmt->scanout[0];
-			priv->pitch = wmt->scanout[0]->pitch;
-			priv->sysmem = NULL;
-			/* Remember it now (EXA is up); reclaim it at CloseScreen
-			 * without calling an EXA accessor during teardown. */
-			wmt->root_priv = priv;
-		}
-		pScreen->ModifyPixmapHeader(root, pScrn->virtualX, pScrn->virtualY,
-					    pScrn->depth, pScrn->bitsPerPixel,
-					    wmt->scanout[0]->pitch, NULL);
-	}
+	/* The front buffer migrates to its GE-addressable copy (the scanout, bound
+	 * in WMTCreatePixmap2) on first accelerated use; force it now so screen
+	 * drawing is accelerated from the first frame. */
+	if (wmt->accel && wmt->exa)
+		exaMoveInPixmap(pScreen->GetScreenPixmap(pScreen));
 
 	if (!xf86SetDesiredModes(pScrn))
 		xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
 			   "Failed to set the initial mode\n");
+
+	/* The root pixmap (the damage source) now exists and the mode is set. */
+	WMTFlipInit(pScreen);
 
 	return TRUE;
 }
@@ -358,6 +362,10 @@ WMTCloseScreen(ScreenPtr pScreen)
 	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
 	WMTPtr wmt = WMTPTR(pScrn);
 	Bool ret;
+
+	/* Tear down the flip path while the screen pixmap (damage source) and DRM
+	 * master are still live, draining any flip so no late event arrives. */
+	WMTFlipFini(pScreen);
 
 	if (wmt->fd_owned)
 		drmDropMaster(wmt->fd);
@@ -371,18 +379,13 @@ WMTCloseScreen(ScreenPtr pScreen)
 	if (wmt->exa)
 		WMTExaCloseScreen(pScreen);
 
-	/* exaCloseScreen unwraps DestroyPixmap before fb destroys the root pixmap,
-	 * so WMTDestroyPixmap never runs for it; reclaim its private (captured at
-	 * bind time) here. Its BO is a scanout buffer, freed just below. */
-	free(wmt->root_priv);
-	wmt->root_priv = NULL;
-
+	if (wmt->screen_bo && wmt->screen_bo != wmt->scanout[0])
+		wmt_bo_destroy(wmt->fd, wmt->screen_bo);
 	if (wmt->scanout[0])
 		wmt_bo_destroy(wmt->fd, wmt->scanout[0]);
 	if (wmt->scanout[1])
 		wmt_bo_destroy(wmt->fd, wmt->scanout[1]);
-	wmt->scanout[0] = wmt->scanout[1] = NULL;
-	wmt->nscanout = 0;
+	wmt->screen_bo = wmt->scanout[0] = wmt->scanout[1] = NULL;
 
 	pScrn->vtSema = FALSE;
 	return ret;
@@ -400,6 +403,7 @@ WMTEnterVT(ScrnInfoPtr pScrn)
 static void
 WMTLeaveVT(ScrnInfoPtr pScrn)
 {
+	WMTFlipDrain(WMTPTR(pScrn));
 	WMTKMSLeaveVT(pScrn);
 	pScrn->vtSema = FALSE;
 }

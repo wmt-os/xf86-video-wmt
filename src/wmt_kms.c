@@ -129,6 +129,8 @@ wmt_crtc_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 		crtc->x = x;
 		crtc->y = y;
 		crtc->rotation = rotation;
+		wmt->mode_w = mode->HDisplay;
+		wmt->mode_h = mode->VDisplay;
 	}
 
 	free(output_ids);
@@ -187,7 +189,7 @@ wmt_output_detect(xf86OutputPtr output)
 	return XF86OutputStatusConnected;
 }
 
-static Bool
+static int
 wmt_output_mode_valid(xf86OutputPtr output, DisplayModePtr mode)
 {
 	if (mode->HDisplay > WMT_GE_MAX_DIM || mode->VDisplay > WMT_GE_MAX_DIM)
@@ -266,41 +268,51 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 	WMTPtr wmt = WMTPTR(pScrn);
 	xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(pScrn);
 	ScreenPtr pScreen = pScrn->pScreen;
-	WMTBO *old = wmt->scanout[0];
-	WMTBO *bo;
+	WMTBO *old[3] = { wmt->scanout[0], wmt->scanout[1], wmt->screen_bo };
+	WMTBO *s0, *s1 = NULL, *shadow;
 	int i;
 
 	if (width == pScrn->virtualX && height == pScrn->virtualY)
 		return TRUE;
 
-	bo = wmt_bo_create(wmt->fd, width, height);
-	if (!bo)
-		return FALSE;
-	if (!wmt_bo_add_fb(wmt->fd, bo) || !wmt_bo_map(wmt->fd, bo)) {
-		wmt_bo_destroy(wmt->fd, bo);
+	/* Submit any queued GE ops before their target buffers are freed below. */
+	wmt_ge_flush(wmt);
+	if (wmt->tearfree)
+		WMTFlipDrain(wmt);
+
+	/* Allocate the full buffer set up front so a failure changes nothing. */
+	s0 = wmt_bo_new(wmt->fd, width, height, TRUE);
+	if (wmt->tearfree && s0) {
+		s1 = wmt_bo_new(wmt->fd, width, height, TRUE);
+		shadow = wmt_bo_new(wmt->fd, width, height, FALSE);
+	} else {
+		shadow = s0;	/* render straight into the scanout */
+	}
+	if (!s0 || (wmt->tearfree && (!s1 || !shadow))) {
+		if (s0) wmt_bo_destroy(wmt->fd, s0);
+		if (s1) wmt_bo_destroy(wmt->fd, s1);
+		if (shadow && shadow != s0) wmt_bo_destroy(wmt->fd, shadow);
 		return FALSE;
 	}
-	memset(bo->map, 0, bo->size);
 
-	wmt->scanout[0] = bo;
+	wmt->scanout[0] = s0;
+	wmt->scanout[1] = s1;
+	wmt->screen_bo = shadow;
 	wmt->current = 0;
 	pScrn->virtualX = width;
 	pScrn->virtualY = height;
-	pScrn->displayWidth = bo->pitch / 4;
+	pScrn->displayWidth = s0->pitch / 4;
 
 	if (pScreen) {
 		PixmapPtr root = pScreen->GetScreenPixmap(pScreen);
 		WMTPixmapPriv *priv = wmt->exa ? WMT_PIXMAP_PRIV(root) : NULL;
 
 		if (priv) {
-			if (priv->bo && priv->bo != old && priv->bo != wmt->scanout[1])
-				wmt_bo_destroy(wmt->fd, priv->bo);
-			priv->bo = bo;
-			priv->pitch = bo->pitch;
-			priv->sysmem = NULL;
+			priv->bo = shadow;
+			priv->pitch = shadow->pitch;
 		}
 		pScreen->ModifyPixmapHeader(root, width, height, -1, -1,
-					    bo->pitch, priv ? NULL : bo->map);
+					    shadow->pitch, priv ? NULL : shadow->map);
 	}
 
 	for (i = 0; i < config->num_crtc; i++) {
@@ -311,8 +323,11 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 						crtc->x, crtc->y);
 	}
 
-	if (old && old != bo)
-		wmt_bo_destroy(wmt->fd, old);
+	/* Release the previous buffers only once the new ones are scanning out. */
+	if (old[2] && old[2] != old[0])
+		wmt_bo_destroy(wmt->fd, old[2]);
+	if (old[0]) wmt_bo_destroy(wmt->fd, old[0]);
+	if (old[1]) wmt_bo_destroy(wmt->fd, old[1]);
 	return TRUE;
 }
 
@@ -352,6 +367,9 @@ WMTKMSPreInit(ScrnInfoPtr pScrn)
 		cp->wmt = wmt;
 		cp->crtc_id = res->crtcs[i];
 		crtc->driver_private = cp;
+
+		if (!wmt->crtc_id)	/* the single display pipe, for page flips */
+			wmt->crtc_id = res->crtcs[i];
 	}
 
 	for (i = 0; i < res->count_connectors; i++) {
@@ -397,11 +415,6 @@ Bool
 WMTKMSScreenInit(ScreenPtr pScreen)
 {
 	return xf86CrtcScreenInit(pScreen);
-}
-
-void
-WMTKMSCloseScreen(ScreenPtr pScreen)
-{
 }
 
 /* --------------------------------------------------------------- VT switch */

@@ -17,7 +17,8 @@
 #define WMT_GE_OP_BLIT		0x2
 
 /* GE raster operation codes (8-bit ROP) */
-#define WMT_GE_ROP_XOR		0x5a	/* S/P XOR D            */
+#define WMT_GE_ROP_PAT_XOR	0x5a	/* P XOR D              */
+#define WMT_GE_ROP_SRC_XOR	0x66	/* S XOR D              */
 #define WMT_GE_ROP_SRC_COPY	0xcc	/* S                    */
 #define WMT_GE_ROP_PAT_COPY	0xf0	/* P (pattern/solid)    */
 

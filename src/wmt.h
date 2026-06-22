@@ -13,6 +13,7 @@
 #include "xf86Crtc.h"
 #include "exa.h"
 #include "damage.h"
+#include "regionstr.h"
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -42,14 +43,12 @@ typedef struct wmt_bo {
 	int		map_refcnt;	/* nested PrepareAccess count          */
 } WMTBO;
 
-/* Per-pixmap driver private (EXA_HANDLES_PIXMAPS). */
+/* Driver private for an accelerated (GE-addressable) pixmap.  EXA owns the
+ * system-memory copy itself in the MIXED model, so this is only ever attached
+ * to surfaces that have a buffer object. */
 typedef struct {
-	WMTBO	       *bo;		/* GE-addressable buffer, or NULL...   */
-	void	       *sysmem;		/* ...software backing when not a BO   */
+	WMTBO	       *bo;		/* GE-addressable buffer object        */
 	int		pitch;		/* row stride in bytes                 */
-	int		width;
-	int		height;
-	int		bpp;
 } WMTPixmapPriv;
 
 typedef struct {
@@ -63,15 +62,19 @@ typedef struct {
 	Bool		tearfree;	/* TearFree page-flipping enabled      */
 	Bool		ge_overlap_ok;	/* GE self-handles overlapping blits   */
 
-	/* Scanout buffers: [0] is always the displayed front buffer; [1]   */
-	/* exists only when TearFree is active.                             */
+	/* Scanout: scanout[current] is displayed.  With TearFree both entries  */
+	/* are presentation buffers flipped between, and the root renders into  */
+	/* screen_bo (a shadow); without it, screen_bo aliases scanout[0] and   */
+	/* the root renders straight into the displayed buffer.                 */
 	WMTBO	       *scanout[2];
-	int		nscanout;
+	WMTBO	       *screen_bo;	/* root's GE copy: shadow, or scanout[0] */
 	int		current;	/* index of the displayed buffer       */
+	uint32_t	crtc_id;	/* active CRTC, for page flips         */
+	int		mode_w, mode_h;	/* displayed resolution (flip clip)    */
 
 	/* EXA */
 	ExaDriverPtr	exa;
-	WMTPixmapPriv  *root_priv;	/* screen pixmap private, for teardown */
+	Bool		screen_bound;	/* root pixmap bound to screen_bo      */
 	struct wmt_ge_op *batch;	/* op accumulation buffer              */
 	unsigned	batch_count;
 	unsigned	batch_max;
@@ -84,9 +87,10 @@ typedef struct {
 	WMTBO	       *op_src_bo;
 	uint32_t	op_src_pitch;
 
-	/* TearFree damage tracking */
-	DamagePtr	damage;
-	Bool		flip_pending;
+	/* TearFree page-flipping */
+	DamagePtr	damage;		/* screen damage since the last flip   */
+	RegionRec	flip_region;	/* damage owed to the alternate buffer */
+	Bool		flip_pending;	/* a page flip awaits its event        */
 
 	/* Wrapped screen entry points */
 	CloseScreenProcPtr		CloseScreen;
@@ -99,6 +103,7 @@ typedef struct {
 
 /* wmt_bo.c -- GEM dumb buffer helpers */
 WMTBO	*wmt_bo_create(int fd, int width, int height);
+WMTBO	*wmt_bo_new(int fd, int width, int height, Bool scanout);
 void	 wmt_bo_destroy(int fd, WMTBO *bo);
 void	*wmt_bo_map(int fd, WMTBO *bo);
 Bool	 wmt_bo_add_fb(int fd, WMTBO *bo);
@@ -106,7 +111,6 @@ Bool	 wmt_bo_add_fb(int fd, WMTBO *bo);
 /* wmt_kms.c -- KMS / RandR-1.2 backend */
 Bool	 WMTKMSPreInit(ScrnInfoPtr pScrn);
 Bool	 WMTKMSScreenInit(ScreenPtr pScreen);
-void	 WMTKMSCloseScreen(ScreenPtr pScreen);
 Bool	 WMTKMSEnterVT(ScrnInfoPtr pScrn);
 void	 WMTKMSLeaveVT(ScrnInfoPtr pScrn);
 
@@ -114,5 +118,12 @@ void	 WMTKMSLeaveVT(ScrnInfoPtr pScrn);
 Bool	 WMTExaInit(ScreenPtr pScreen);
 void	 WMTExaCloseScreen(ScreenPtr pScreen);
 void	 wmt_ge_flush(WMTPtr wmt);		/* submit any queued ops    */
+void	 wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst,
+		     int x, int y, int w, int h);	/* queue a src->dst copy */
+
+/* wmt_present.c -- TearFree page-flipping */
+void	 WMTFlipInit(ScreenPtr pScreen);
+void	 WMTFlipFini(ScreenPtr pScreen);
+void	 WMTFlipDrain(WMTPtr wmt);		/* wait out a pending flip  */
 
 #endif /* WMT_H */

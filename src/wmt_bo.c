@@ -49,6 +49,25 @@ wmt_bo_create(int fd, int width, int height)
 	return bo;
 }
 
+/*
+ * Allocate a ready-to-use, zero-filled buffer: mapped for CPU access and,
+ * when scanout is requested, wrapped in a KMS framebuffer for display.
+ */
+WMTBO *
+wmt_bo_new(int fd, int width, int height, Bool scanout)
+{
+	WMTBO *bo = wmt_bo_create(fd, width, height);
+
+	if (!bo)
+		return NULL;
+	if (!wmt_bo_map(fd, bo) || (scanout && !wmt_bo_add_fb(fd, bo))) {
+		wmt_bo_destroy(fd, bo);
+		return NULL;
+	}
+	memset(bo->map, 0, bo->size);
+	return bo;
+}
+
 /* Lazily mmap the buffer for CPU access; returns the cached mapping. */
 void *
 wmt_bo_map(int fd, WMTBO *bo)

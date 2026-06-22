@@ -2,14 +2,14 @@
  * WonderMedia WM8505 X.Org video driver -- EXA acceleration.
  *
  * Maps EXA's solid-fill and copy primitives onto the kernel's GE command
- * batch IOCTL (DRM_IOCTL_WMT_GE_BATCH).  Every accelerated pixmap is its own
- * GEM dumb buffer (the GE addresses surfaces by handle), so this uses the
- * EXA_HANDLES_PIXMAPS model and falls back to ordinary system-memory pixmaps
- * when a contiguous buffer cannot be obtained.
+ * batch IOCTL (DRM_IOCTL_WMT_GE_BATCH).
  *
- * The engine is a 32-bpp fill/copy/XOR unit with no alpha blending, so Render
- * compositing is left to the X server; the resulting blits to screen are
- * accelerated here.
+ * The GE addresses surfaces by GEM handle, so each accelerated surface is its
+ * own dumb buffer.  This uses the EXA_MIXED_PIXMAPS model: the server keeps a
+ * cached system-memory copy of every pixmap (so Render compositing, which the
+ * engine cannot do, runs correctly and quickly on cached memory) and EXA asks
+ * the driver for a GE-addressable buffer only when a pixmap is actually
+ * accelerated, migrating it in and out via UploadToScreen/DownloadFromScreen.
  *
  * Copyright (C) 2026 Logan Russell <me@lrussell.net>
  */
@@ -24,7 +24,7 @@
 #include "wmt.h"
 
 /* Write-combined buffer drain: ensure CPU writes to a BO are visible to the
- * GE before we kick off a DMA that reads them. */
+ * GE (and the scanout) before a DMA reads them. */
 static inline void
 wmt_wc_barrier(void)
 {
@@ -41,7 +41,7 @@ wmt_solid_rop(int alu)
 {
 	switch (alu) {
 	case GXcopy:	return WMT_GE_ROP_PAT_COPY;	/* P        */
-	case GXxor:	return WMT_GE_ROP_XOR;		/* P XOR D  */
+	case GXxor:	return WMT_GE_ROP_PAT_XOR;	/* P XOR D  */
 	default:	return -1;
 	}
 }
@@ -51,7 +51,7 @@ wmt_copy_rop(int alu)
 {
 	switch (alu) {
 	case GXcopy:	return WMT_GE_ROP_SRC_COPY;	/* S        */
-	case GXxor:	return 0x66;			/* S XOR D  */
+	case GXxor:	return WMT_GE_ROP_SRC_XOR;	/* S XOR D  */
 	default:	return -1;
 	}
 }
@@ -72,7 +72,7 @@ wmt_ge_flush(WMTPtr wmt)
 	req.num_ops = wmt->batch_count;
 
 	if (drmCommandWrite(wmt->fd, DRM_WMT_GE_BATCH, &req, sizeof(req)) != 0)
-		xf86DrvMsgVerb(0, X_WARNING, 3, "wmt: GE batch of %u ops failed\n",
+		xf86DrvMsgVerb(0, X_WARNING, 1, "GE batch of %u ops failed\n",
 			       wmt->batch_count);
 
 	wmt->batch_count = 0;
@@ -85,6 +85,28 @@ wmt_ge_next(WMTPtr wmt)
 	if (wmt->batch_count >= wmt->batch_max)
 		wmt_ge_flush(wmt);
 	return &wmt->batch[wmt->batch_count++];
+}
+
+/* Queue a straight source-copy blit between two buffers (same coordinates in
+ * each).  Used by the TearFree flip path; the caller submits with wmt_ge_flush. */
+void
+wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst, int x, int y, int w, int h)
+{
+	struct wmt_ge_op *op = wmt_ge_next(wmt);
+
+	memset(op, 0, sizeof(*op));
+	op->type = WMT_GE_OP_BLIT;
+	op->rop = WMT_GE_ROP_SRC_COPY;
+	op->dest_handle = dst->handle;
+	op->dest_pitch = dst->pitch;
+	op->dest_x = x;
+	op->dest_y = y;
+	op->width = w;
+	op->height = h;
+	op->src_handle = src->handle;
+	op->src_pitch = src->pitch;
+	op->src_x = x;
+	op->src_y = y;
 }
 
 /* ------------------------------------------------------------------ Solid */
@@ -107,7 +129,7 @@ WMTPrepareSolid(PixmapPtr pPix, int alu, Pixel planemask, Pixel fg)
 
 	wmt->op_dst_bo = priv->bo;
 	wmt->op_dst_pitch = exaGetPixmapPitch(pPix);
-	wmt->op_rop = (rop == WMT_GE_ROP_PAT_COPY) ? 0 : (uint32_t)rop;
+	wmt->op_rop = (uint32_t)rop;
 	wmt->op_fg = fg;
 	return TRUE;
 }
@@ -128,12 +150,6 @@ WMTSolid(PixmapPtr pPix, int x1, int y1, int x2, int y2)
 	op->width = x2 - x1;
 	op->height = y2 - y1;
 	op->color = wmt->op_fg;
-}
-
-static void
-WMTDoneSolid(PixmapPtr pPix)
-{
-	wmt_ge_flush(WMTPTR(xf86ScreenToScrn(pPix->drawable.pScreen)));
 }
 
 /* ------------------------------------------------------------------- Copy */
@@ -165,7 +181,7 @@ WMTPrepareCopy(PixmapPtr pSrc, PixmapPtr pDst, int dx, int dy,
 	wmt->op_src_pitch = exaGetPixmapPitch(pSrc);
 	wmt->op_dst_bo = d->bo;
 	wmt->op_dst_pitch = exaGetPixmapPitch(pDst);
-	wmt->op_rop = (rop == WMT_GE_ROP_SRC_COPY) ? 0 : (uint32_t)rop;
+	wmt->op_rop = (uint32_t)rop;
 	return TRUE;
 }
 
@@ -190,10 +206,14 @@ WMTCopy(PixmapPtr pDst, int srcX, int srcY, int dstX, int dstY, int w, int h)
 	op->src_y = srcY;
 }
 
+/*
+ * Solid and Copy share one no-op completion.  Queued GE ops are submitted
+ * lazily -- at WaitMarker, before CPU access, or once per frame in the block
+ * handler -- so a burst of primitives costs a single ioctl, not one each.
+ */
 static void
-WMTDoneCopy(PixmapPtr pDst)
+WMTDoneOp(PixmapPtr pPix)
 {
-	wmt_ge_flush(WMTPTR(xf86ScreenToScrn(pDst->drawable.pScreen)));
 }
 
 /* --------------------------------------------------------------- Sync */
@@ -206,55 +226,55 @@ WMTWaitMarker(ScreenPtr pScreen, int marker)
 
 /* ------------------------------------------------------ Pixmap management */
 
-static int
-wmt_sw_pitch(int width, int bpp)
-{
-	return (((width * bpp + 7) / 8) + 3) & ~3;
-}
-
+/*
+ * MIXED model: a driver pixmap is created only for GE-addressable surfaces
+ * (32-bpp, within the engine's coordinate range).  Returning NULL leaves the
+ * pixmap in system memory, where the server renders it directly.
+ */
 static void *
 WMTCreatePixmap2(ScreenPtr pScreen, int width, int height, int depth,
 		 int usage_hint, int bitsPerPixel, int *new_fb_pitch)
 {
-	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(pScreen));
+	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
+	WMTPtr wmt = WMTPTR(pScrn);
 	WMTPixmapPriv *priv;
+	WMTBO *bo;
+
+	if (!wmt->accel || bitsPerPixel != WMT_BPP ||
+	    width <= 0 || height <= 0 ||
+	    width > WMT_GE_MAX_DIM || height > WMT_GE_MAX_DIM)
+		return NULL;
 
 	priv = calloc(1, sizeof(*priv));
 	if (!priv)
 		return NULL;
 
-	priv->width = width;
-	priv->height = height;
-	priv->bpp = bitsPerPixel;
-
-	/* Deferred (headless) pixmap: keep the private, allocate later. */
-	if (width == 0 || height == 0) {
-		*new_fb_pitch = 0;
+	/*
+	 * Bind the root pixmap's GPU copy to screen_bo.  Without TearFree that is
+	 * the scanout itself, so screen drawing is GE-accelerated and shown with no
+	 * extra copy; with TearFree it is an off-screen shadow the flip path
+	 * presents.  Either way EXA migrates to a cached system copy for the
+	 * operations the engine can't do (Render), then back here.
+	 */
+	if (!wmt->screen_bound &&
+	    width == pScrn->virtualX && height == pScrn->virtualY) {
+		priv->bo = wmt->screen_bo;
+		priv->pitch = wmt->screen_bo->pitch;
+		wmt->screen_bound = TRUE;
+		*new_fb_pitch = priv->pitch;
 		return priv;
 	}
 
-	/* Accelerable surfaces are 32-bpp and within the GE's coordinate
-	 * limits.  Anything else (or a CMA shortfall) becomes a software
-	 * pixmap that the X server renders directly. */
-	if (wmt->accel && bitsPerPixel == WMT_BPP &&
-	    width <= WMT_GE_MAX_DIM && height <= WMT_GE_MAX_DIM) {
-		WMTBO *bo = wmt_bo_create(wmt->fd, width, height);
-
-		if (bo) {
-			priv->bo = bo;
-			priv->pitch = bo->pitch;
-			*new_fb_pitch = bo->pitch;
-			return priv;
-		}
-	}
-
-	priv->pitch = wmt_sw_pitch(width, bitsPerPixel);
-	priv->sysmem = malloc((size_t)priv->pitch * height);
-	if (!priv->sysmem) {
+	bo = wmt_bo_create(wmt->fd, width, height);
+	if (!bo || !wmt_bo_map(wmt->fd, bo)) {
+		if (bo)
+			wmt_bo_destroy(wmt->fd, bo);
 		free(priv);
 		return NULL;
 	}
-	*new_fb_pitch = priv->pitch;
+	priv->bo = bo;
+	priv->pitch = bo->pitch;
+	*new_fb_pitch = bo->pitch;
 	return priv;
 }
 
@@ -267,19 +287,26 @@ WMTDestroyPixmap(ScreenPtr pScreen, void *driverPriv)
 	if (!priv)
 		return;
 
-	/* The scanout buffers are owned by the KMS layer, never by a pixmap. */
-	if (priv->bo && priv->bo != wmt->scanout[0] && priv->bo != wmt->scanout[1])
+	/* The scanout and shadow buffers are owned by the driver, never a pixmap. */
+	if (priv->bo && priv->bo != wmt->scanout[0] && priv->bo != wmt->scanout[1] &&
+	    priv->bo != wmt->screen_bo) {
+		/* Submit queued ops first; none may reference the freed handle. */
+		wmt_ge_flush(wmt);
 		wmt_bo_destroy(wmt->fd, priv->bo);
-	free(priv->sysmem);
+	}
 	free(priv);
 }
 
+/* Only driver (BO-backed) pixmaps reach this hook in the MIXED model; expose
+ * the buffer's mapping and stride to EXA as the GPU copy. */
 static Bool
 WMTModifyPixmapHeader(PixmapPtr pPix, int width, int height, int depth,
 		      int bitsPerPixel, int devKind, void *pPixData)
 {
-	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(pPix->drawable.pScreen));
 	WMTPixmapPriv *priv = WMT_PIXMAP_PRIV(pPix);
+
+	if (!priv || !priv->bo)
+		return FALSE;
 
 	if (width > 0)
 		pPix->drawable.width = width;
@@ -289,41 +316,15 @@ WMTModifyPixmapHeader(PixmapPtr pPix, int width, int height, int depth,
 		pPix->drawable.depth = depth;
 	if (bitsPerPixel > 0)
 		pPix->drawable.bitsPerPixel = bitsPerPixel;
-	if (devKind > 0)
-		pPix->devKind = devKind;
 	pPix->drawable.serialNumber = NEXT_SERIAL_NUMBER;
-
-	if (!priv)
-		return TRUE;
-
-	if (width > 0)
-		priv->width = width;
-	if (height > 0)
-		priv->height = height;
-	if (bitsPerPixel > 0)
-		priv->bpp = bitsPerPixel;
-
-	if (pPixData) {
-		/* Server is wrapping its own memory: demote to software. */
-		if (priv->bo && priv->bo != wmt->scanout[0] &&
-		    priv->bo != wmt->scanout[1])
-			wmt_bo_destroy(wmt->fd, priv->bo);
-		free(priv->sysmem);	/* release any driver-owned buffer */
-		priv->bo = NULL;
-		priv->sysmem = NULL;	/* new backing is externally owned */
-		if (devKind > 0)
-			priv->pitch = devKind;
-		pPix->devPrivate.ptr = pPixData;
-	} else if (priv->bo) {
-		pPix->devKind = priv->pitch ? priv->pitch : (int)priv->bo->pitch;
-		pPix->devPrivate.ptr = NULL;	/* offscreen: mapped on demand */
-	} else if (priv->sysmem) {
-		pPix->devKind = priv->pitch;
-		pPix->devPrivate.ptr = priv->sysmem;
-	}
+	pPix->devKind = priv->pitch;
+	pPix->devPrivate.ptr = priv->bo->map;	/* captured by EXA as fb_ptr */
 	return TRUE;
 }
 
+/* MIXED's exaPixmapHasGpuCopy_mixed calls this unconditionally once a pixmap
+ * has a driverPriv, so it must exist: a pixmap is GE-addressable iff it owns a
+ * buffer object. */
 static Bool
 WMTPixmapIsOffscreen(PixmapPtr pPix)
 {
@@ -332,6 +333,8 @@ WMTPixmapIsOffscreen(PixmapPtr pPix)
 	return priv && priv->bo != NULL;
 }
 
+/* Direct CPU access to a driver pixmap's buffer: ensure GE output has landed,
+ * then hand back the (write-combined) mapping. */
 static Bool
 WMTPrepareAccess(PixmapPtr pPix, int index)
 {
@@ -340,12 +343,13 @@ WMTPrepareAccess(PixmapPtr pPix, int index)
 	void *map;
 
 	if (!priv || !priv->bo)
-		return TRUE;		/* software pixmap: ptr already valid */
+		return TRUE;
 
 	map = wmt_bo_map(wmt->fd, priv->bo);
 	if (!map)
 		return FALSE;
 
+	wmt_ge_flush(wmt);
 	pPix->devPrivate.ptr = map;
 	return TRUE;
 }
@@ -355,10 +359,53 @@ WMTFinishAccess(PixmapPtr pPix, int index)
 {
 	WMTPixmapPriv *priv = WMT_PIXMAP_PRIV(pPix);
 
-	/* Keep the mapping cached in the BO; just drop the per-access pointer
-	 * for offscreen pixmaps (EXA also clears it). */
-	if (priv && priv->bo)
+	if (priv && priv->bo) {
+		wmt_wc_barrier();	/* flush CPU writes for the GE/scanout */
 		pPix->devPrivate.ptr = NULL;
+	}
+}
+
+/* Migrate a system-memory region into a driver pixmap's buffer. */
+static Bool
+WMTUploadToScreen(PixmapPtr pDst, int x, int y, int w, int h,
+		  char *src, int src_pitch)
+{
+	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(pDst->drawable.pScreen));
+	WMTPixmapPriv *priv = WMT_PIXMAP_PRIV(pDst);
+	int bpp, i;
+	char *dst;
+
+	if (!priv || !priv->bo || !priv->bo->map)
+		return FALSE;
+
+	wmt_ge_flush(wmt);	/* finish queued GE ops before the CPU writes */
+	bpp = pDst->drawable.bitsPerPixel / 8;
+	dst = (char *)priv->bo->map + y * priv->pitch + x * bpp;
+	for (i = 0; i < h; i++)
+		memcpy(dst + i * priv->pitch, src + i * src_pitch, (size_t)w * bpp);
+	wmt_wc_barrier();
+	return TRUE;
+}
+
+/* Migrate a driver pixmap's buffer back out to system memory. */
+static Bool
+WMTDownloadFromScreen(PixmapPtr pSrc, int x, int y, int w, int h,
+		      char *dst, int dst_pitch)
+{
+	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(pSrc->drawable.pScreen));
+	WMTPixmapPriv *priv = WMT_PIXMAP_PRIV(pSrc);
+	int bpp, i;
+	char *s;
+
+	if (!priv || !priv->bo || !priv->bo->map)
+		return FALSE;
+
+	wmt_ge_flush(wmt);
+	bpp = pSrc->drawable.bitsPerPixel / 8;
+	s = (char *)priv->bo->map + y * priv->pitch + x * bpp;
+	for (i = 0; i < h; i++)
+		memcpy(dst + i * dst_pitch, s + i * priv->pitch, (size_t)w * bpp);
+	return TRUE;
 }
 
 /* ----------------------------------------------------- Overlap self-test */
@@ -446,11 +493,9 @@ WMTExaInit(ScreenPtr pScreen)
 	exa->exa_major = EXA_VERSION_MAJOR;
 	exa->exa_minor = EXA_VERSION_MINOR;
 
-	/* PREPARE_AUX: PrepareAccess ignores the index (one BO per pixmap), so we
-	 * accept the AUX_* indices EXA uses for scratch pixmaps during fallbacks.
-	 * Without this flag EXA FatalError()s on AUX access to a pinned pixmap. */
-	exa->flags = EXA_OFFSCREEN_PIXMAPS | EXA_HANDLES_PIXMAPS |
-		     EXA_SUPPORTS_PREPARE_AUX;
+	/* MIXED is selected by HANDLES|MIXED together; MIXED alone falls through
+	 * to the classic model. */
+	exa->flags = EXA_OFFSCREEN_PIXMAPS | EXA_HANDLES_PIXMAPS | EXA_MIXED_PIXMAPS;
 	exa->maxX = WMT_GE_MAX_DIM;
 	exa->maxY = WMT_GE_MAX_DIM;
 	exa->maxPitchBytes = WMT_GE_MAX_DIM * 4;
@@ -459,11 +504,11 @@ WMTExaInit(ScreenPtr pScreen)
 
 	exa->PrepareSolid = WMTPrepareSolid;
 	exa->Solid = WMTSolid;
-	exa->DoneSolid = WMTDoneSolid;
+	exa->DoneSolid = WMTDoneOp;
 
 	exa->PrepareCopy = WMTPrepareCopy;
 	exa->Copy = WMTCopy;
-	exa->DoneCopy = WMTDoneCopy;
+	exa->DoneCopy = WMTDoneOp;
 
 	exa->WaitMarker = WMTWaitMarker;
 
@@ -473,6 +518,8 @@ WMTExaInit(ScreenPtr pScreen)
 	exa->PixmapIsOffscreen = WMTPixmapIsOffscreen;
 	exa->PrepareAccess = WMTPrepareAccess;
 	exa->FinishAccess = WMTFinishAccess;
+	exa->UploadToScreen = WMTUploadToScreen;
+	exa->DownloadFromScreen = WMTDownloadFromScreen;
 
 	wmt->batch_max = 1024;
 	wmt->batch = malloc(wmt->batch_max * sizeof(struct wmt_ge_op));
