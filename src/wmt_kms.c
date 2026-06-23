@@ -27,7 +27,6 @@
 typedef struct {
 	WMTPtr		wmt;
 	uint32_t	crtc_id;	/* kernel CRTC object id */
-	int		dpms_mode;
 } WMTCrtcPriv;
 
 typedef struct {
@@ -140,9 +139,8 @@ wmt_crtc_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 static void
 wmt_crtc_dpms(xf86CrtcPtr crtc, int mode)
 {
-	WMTCrtcPriv *cp = crtc->driver_private;
-
-	cp->dpms_mode = mode;
+	/* The fixed internal panel has no power states to switch; the required
+	 * RandR hook is a no-op (as is the per-output one). */
 }
 
 static void

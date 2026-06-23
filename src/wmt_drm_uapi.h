@@ -1,8 +1,8 @@
 /*
  * Userspace mirror of the WonderMedia WM8505 wmt-drm GE command interface.
  *
- * Kept byte-compatible with the kernel's include/uapi/drm/wmt_drm.h (driver
- * major 2: asynchronous job ring + cached BOs + cache-sync).
+ * Kept byte-compatible with the kernel's include/uapi/drm/wmt_drm.h: the
+ * asynchronous GE job ring (GE_SUBMIT returns a seqno, GE_WAIT blocks on it).
  *
  * Copyright (C) 2026 Logan Russell <me@lrussell.net>
  */
@@ -15,7 +15,7 @@
 
 /* Limits enforced by the kernel */
 #define WMT_GE_MAX_DIM		2048	/* max width/height of an op or surface */
-#define WMT_GE_MAX_OPS		8192	/* max ops per submit / rects per sync */
+#define WMT_GE_MAX_OPS		8192	/* max ops per submit */
 
 /* wmt_ge_op.type */
 #define WMT_GE_OP_FILL		0x1
@@ -59,52 +59,12 @@ struct wmt_ge_wait {
 	uint32_t timeout_us;	/* 0 selects the default */
 };
 
-/* wmt_gem_create.flags */
-#define WMT_GEM_CACHED		0x1	/* CPU-cached (composite target); else write-combine */
-
-/* Allocate a GE buffer. */
-struct wmt_gem_create {
-	uint32_t size;
-	uint32_t flags;
-	uint32_t handle;	/* OUT */
-	uint32_t pad;		/* must be 0 */
-};
-
-/* wmt_gem_sync.flags: exactly one direction. */
-#define WMT_SYNC_FOR_GE		0x1	/* hand CPU-composited rows to the GE */
-#define WMT_SYNC_FOR_CPU	0x2	/* hand GE-written rows back to the CPU */
-
-/* Damage rectangle; rows [y, y + height) are synced, x/width ignored. */
-struct wmt_rect {
-	uint32_t x;
-	uint32_t y;
-	uint32_t width;
-	uint32_t height;
-};
-
-/* Cache-maintain a cached BO's damaged rows across a CPU<->GE handoff. */
-struct wmt_gem_sync {
-	uint64_t rects;		/* pointer to struct wmt_rect[num_rects] */
-	uint32_t handle;
-	uint32_t flags;
-	uint32_t pitch;
-	uint32_t num_rects;
-	uint32_t wait_seqno;	/* FOR_CPU: wait this GE seqno before invalidating; 0 = skip */
-	uint32_t pad;		/* must be 0 */
-};
-
 #define DRM_WMT_GE_SUBMIT	0x00
 #define DRM_WMT_GE_WAIT		0x01
-#define DRM_WMT_GEM_CREATE	0x02
-#define DRM_WMT_GEM_SYNC	0x03
 
 #define DRM_IOCTL_WMT_GE_SUBMIT \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_WMT_GE_SUBMIT, struct wmt_ge_submit)
 #define DRM_IOCTL_WMT_GE_WAIT \
 	DRM_IOW(DRM_COMMAND_BASE + DRM_WMT_GE_WAIT, struct wmt_ge_wait)
-#define DRM_IOCTL_WMT_GEM_CREATE \
-	DRM_IOWR(DRM_COMMAND_BASE + DRM_WMT_GEM_CREATE, struct wmt_gem_create)
-#define DRM_IOCTL_WMT_GEM_SYNC \
-	DRM_IOW(DRM_COMMAND_BASE + DRM_WMT_GEM_SYNC, struct wmt_gem_sync)
 
 #endif /* WMT_DRM_UAPI_H */

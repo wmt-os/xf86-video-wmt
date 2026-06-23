@@ -148,7 +148,7 @@ wmt_ge_next(WMTPtr wmt, uint32_t dst, uint32_t src)
 }
 
 /*
- * Clamp an op rectangle at (x, y) to a buffer's real extent, shrinking *w/*h.
+ * Clamp an op rectangle at (x, y) to a buffer's real extent, shrinking w and h.
  * Returns FALSE if nothing is left to draw.  The GE addresses raw buffers with
  * no clip register, yet EXA can hand us boxes that overrun a surface: its
  * Composite-to-Copy fast path inherits Render's "sample past the source"
