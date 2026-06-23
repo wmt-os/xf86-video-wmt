@@ -6,7 +6,8 @@ ARMv5 netbook.
 
 It drives the panel through the in-kernel `wmt-drm` DRM/KMS driver and
 accelerates X11 solid fills and copies on the GE via the EXA architecture and
-the kernel's `DRM_IOCTL_WMT_GE_BATCH` command-batch interface.
+the kernel's asynchronous GE job ring (`DRM_IOCTL_WMT_GE_SUBMIT` /
+`DRM_IOCTL_WMT_GE_WAIT`).
 
 ## Capabilities
 

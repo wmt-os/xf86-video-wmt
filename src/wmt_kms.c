@@ -301,7 +301,7 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 	wmt->current = 0;
 	pScrn->virtualX = width;
 	pScrn->virtualY = height;
-	pScrn->displayWidth = s0->pitch / 4;
+	pScrn->displayWidth = s0->pitch / WMT_BYTES_PP;
 
 	if (pScreen) {
 		PixmapPtr root = pScreen->GetScreenPixmap(pScreen);

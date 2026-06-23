@@ -241,7 +241,7 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 		return FALSE;
 	}
 	wmt->current = 0;
-	pScrn->displayWidth = wmt->scanout[0]->pitch / 4;
+	pScrn->displayWidth = wmt->scanout[0]->pitch / WMT_BYTES_PP;
 
 	if (wmt->tearfree) {
 		wmt->scanout[1] = wmt_bo_new(wmt->fd, w, h, TRUE);

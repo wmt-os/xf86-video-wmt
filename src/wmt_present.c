@@ -98,7 +98,9 @@ wmt_present(WMTPtr wmt)
 		RegionCopy(&wmt->flip_region, damage);
 	} else {
 		/* Cannot flip (blanked): update the displayed buffer in place with
-		 * just this frame's damage -- it already holds everything older. */
+		 * just this frame's damage -- it already holds everything older.  The
+		 * blit is submitted asynchronously (the kernel pins the live scanout BO
+		 * until the job retires); a later CPU read is re-fenced by wmt_ge_sync. */
 		RegionIntersect(&copy, damage, &clip);
 		box = RegionRects(&copy);
 		n = RegionNumRects(&copy);

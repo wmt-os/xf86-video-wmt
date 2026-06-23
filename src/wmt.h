@@ -27,9 +27,10 @@
 #define WMT_VERSION_CURRENT \
 	((WMT_VERSION_MAJOR << 20) | (WMT_VERSION_MINOR << 10) | WMT_VERSION_PATCH)
 
-/* The GE and scanout always operate at 32 bpp / depth 24. */
+/* The GE and scanout operate at 32 bpp / depth 24. */
 #define WMT_BPP		32
 #define WMT_DEPTH	24
+#define WMT_BYTES_PP	(WMT_BPP / 8)	/* bytes per pixel; bytes<->pixels conversions */
 
 /* A GEM dumb buffer object. */
 typedef struct wmt_bo {
@@ -78,6 +79,10 @@ typedef struct {
 	struct wmt_ge_op *batch;	/* op accumulation buffer              */
 	unsigned	batch_count;
 	unsigned	batch_max;
+	uint32_t	batch_dst;	/* dst handle of the queued batch      */
+	uint32_t	batch_src;	/* src handle of the queued batch, or 0 */
+	uint32_t	last_submit_seqno;	/* seqno of the last GE_SUBMIT  */
+	uint32_t	last_synced_seqno;	/* last seqno we GE_WAITed on   */
 
 	/* State captured by the current PrepareSolid/PrepareCopy.          */
 	WMTBO	       *op_dst_bo;
@@ -101,6 +106,13 @@ typedef struct {
 #define WMTPTR(scrn)		((WMTPtr)((scrn)->driverPrivate))
 #define WMT_PIXMAP_PRIV(pPix)	((WMTPixmapPriv *)exaGetPixmapDriverPrivate(pPix))
 
+/* True once the completed seqno has reached target (wrap-safe); mirrors the kernel ge_passed(). */
+static inline Bool
+wmt_ge_passed(uint32_t done, uint32_t target)
+{
+	return (int32_t)(done - target) >= 0;
+}
+
 /* wmt_bo.c -- GEM dumb buffer helpers */
 WMTBO	*wmt_bo_create(int fd, int width, int height);
 WMTBO	*wmt_bo_new(int fd, int width, int height, Bool scanout);
@@ -114,10 +126,11 @@ Bool	 WMTKMSScreenInit(ScreenPtr pScreen);
 Bool	 WMTKMSEnterVT(ScrnInfoPtr pScrn);
 void	 WMTKMSLeaveVT(ScrnInfoPtr pScrn);
 
-/* wmt_exa.c -- EXA acceleration over the GE batch IOCTL */
+/* wmt_exa.c -- EXA acceleration over the async GE job ring */
 Bool	 WMTExaInit(ScreenPtr pScreen);
 void	 WMTExaCloseScreen(ScreenPtr pScreen);
-void	 wmt_ge_flush(WMTPtr wmt);		/* submit any queued ops    */
+void	 wmt_ge_flush(WMTPtr wmt);		/* submit any queued ops (async) */
+void	 wmt_ge_sync(WMTPtr wmt);		/* submit + wait for GE completion */
 void	 wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst,
 		     int x, int y, int w, int h);	/* queue a src->dst copy */
 

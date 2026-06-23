@@ -1,8 +1,9 @@
 /*
  * WonderMedia WM8505 X.Org video driver -- EXA acceleration.
  *
- * Maps EXA's solid-fill and copy primitives onto the kernel's GE command
- * batch IOCTL (DRM_IOCTL_WMT_GE_BATCH).
+ * Maps EXA's solid-fill and copy primitives onto the kernel's asynchronous GE
+ * job ring (DRM_IOCTL_WMT_GE_SUBMIT returns a seqno; DRM_IOCTL_WMT_GE_WAIT
+ * blocks on it), batching primitives into one submission per drawing burst.
  *
  * The GE addresses surfaces by GEM handle, so each accelerated surface is its
  * own dumb buffer.  This uses the EXA_MIXED_PIXMAPS model: the server keeps a
@@ -18,6 +19,7 @@
 #include "config.h"
 #endif
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -56,35 +58,116 @@ wmt_copy_rop(int alu)
 	}
 }
 
-/* Submit any queued GE operations.  The IOCTL is synchronous: on return the
- * engine is idle, so no separate fence is required. */
+/* Submit any queued GE operations.  Asynchronous: WMT_GE_SUBMIT returns a job
+ * seqno without blocking, so the CPU keeps drawing while the GE drains.  Callers
+ * that must observe GE output (CPU access, page flip) use wmt_ge_sync().  The
+ * batch always holds a single dst (+ <=1 src), as the kernel ABI requires. */
 void
 wmt_ge_flush(WMTPtr wmt)
 {
-	struct wmt_ge_batch_req req;
+	struct wmt_ge_submit req;
 
 	if (wmt->batch_count == 0)
 		return;
 
-	wmt_wc_barrier();
+	wmt_wc_barrier();	/* CPU writes to the WC batch targets reach DRAM first */
 
-	req.ops = wmt->batch;
+	memset(&req, 0, sizeof(req));
+	req.ops = (uint64_t)(uintptr_t)wmt->batch;
 	req.num_ops = wmt->batch_count;
 
-	if (drmCommandWrite(wmt->fd, DRM_WMT_GE_BATCH, &req, sizeof(req)) != 0)
-		xf86DrvMsgVerb(0, X_WARNING, 1, "GE batch of %u ops failed\n",
-			       wmt->batch_count);
+	/* drmIoctl retries the bounded ring's EAGAIN until a slot frees. A failure
+	 * here silently drops drawing, so log it unconditionally (verb 0), with the
+	 * first op's geometry to pin down a rejected (out-of-bounds) primitive. */
+	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_SUBMIT, &req) != 0) {
+		struct wmt_ge_op *o = &wmt->batch[0];
+
+		xf86DrvMsgVerb(0, X_WARNING, 0,
+			       "GE submit of %u ops failed: %s "
+			       "[op0 t=%u rop=%#x dst=%u pitch=%u @%u,%u %ux%u "
+			       "src=%u pitch=%u @%u,%u]\n",
+			       wmt->batch_count, strerror(errno),
+			       o->type, o->rop, o->dest_handle, o->dest_pitch,
+			       o->dest_x, o->dest_y, o->width, o->height,
+			       o->src_handle, o->src_pitch, o->src_x, o->src_y);
+	} else {
+		wmt->last_submit_seqno = req.out_seqno;
+	}
 
 	wmt->batch_count = 0;
+	wmt->batch_dst = 0;
+	wmt->batch_src = 0;
 }
 
-/* Reserve the next op slot, flushing first if the batch is full. */
-static struct wmt_ge_op *
-wmt_ge_next(WMTPtr wmt)
+/* Submit queued ops and block until the GE has completed them, so the CPU (or a
+ * page flip) can safely observe the result. */
+void
+wmt_ge_sync(WMTPtr wmt)
 {
+	struct wmt_ge_wait w;
+
+	wmt_ge_flush(wmt);
+
+	/* last_submit_seqno == 0 means nothing has been submitted yet: the kernel
+	 * never assigns seqno 0, so it is an unambiguous "no work" sentinel. */
+	if (!wmt->last_submit_seqno ||
+	    wmt_ge_passed(wmt->last_synced_seqno, wmt->last_submit_seqno))
+		return;
+
+	memset(&w, 0, sizeof(w));
+	w.seqno = wmt->last_submit_seqno;
+	/* drmIoctl already retries EINTR/EAGAIN; a failure here is a wedged engine
+	 * (ETIMEDOUT) or an abandoned job (EIO). Log it, but still advance the synced
+	 * seqno: re-waiting a dead job would only stall the server, and the kernel's
+	 * reset worker has already recovered the engine. */
+	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) != 0)
+		xf86DrvMsgVerb(0, X_WARNING, 0, "GE wait for seqno %u failed: %s\n",
+			       w.seqno, strerror(errno));
+	wmt->last_synced_seqno = wmt->last_submit_seqno;
+}
+
+/* Reserve the next op slot.  Flush first if the batch is full, or if this op
+ * targets a different dst/src than the queued batch (one dst per submit). */
+static struct wmt_ge_op *
+wmt_ge_next(WMTPtr wmt, uint32_t dst, uint32_t src)
+{
+	if (wmt->batch_count &&
+	    (dst != wmt->batch_dst || (src && wmt->batch_src && src != wmt->batch_src)))
+		wmt_ge_flush(wmt);
 	if (wmt->batch_count >= wmt->batch_max)
 		wmt_ge_flush(wmt);
+
+	/* A FILL passes src == 0 and must not disturb a recorded BLIT source: the
+	 * flush test above only compares sources when both are non-zero, so fills
+	 * batch freely alongside blits to the same dst, and only an actual change of
+	 * source forces a flush. */
+	wmt->batch_dst = dst;
+	if (src)
+		wmt->batch_src = src;
 	return &wmt->batch[wmt->batch_count++];
+}
+
+/*
+ * Clamp an op rectangle at (x, y) to a buffer's real extent, shrinking *w/*h.
+ * Returns FALSE if nothing is left to draw.  The GE addresses raw buffers with
+ * no clip register, yet EXA can hand us boxes that overrun a surface: its
+ * Composite-to-Copy fast path inherits Render's "sample past the source"
+ * semantics (unlike DIX-clipped CopyArea), so a source region may extend beyond
+ * the source drawable.  An unclamped op would then read or write past the
+ * allocation -- which the kernel rejects (silently dropping the draw) and can
+ * wedge the engine -- so every emitter clips to the buffer first, matching the
+ * software path that clips such reads to the drawable.
+ */
+static Bool
+wmt_clip_to_bo(WMTBO *bo, int x, int y, int *w, int *h)
+{
+	if (x < 0 || y < 0 || x >= bo->width || y >= bo->height)
+		return FALSE;
+	if (x + *w > bo->width)
+		*w = bo->width - x;
+	if (y + *h > bo->height)
+		*h = bo->height - y;
+	return *w > 0 && *h > 0;
 }
 
 /* Queue a straight source-copy blit between two buffers (same coordinates in
@@ -92,7 +175,12 @@ wmt_ge_next(WMTPtr wmt)
 void
 wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst, int x, int y, int w, int h)
 {
-	struct wmt_ge_op *op = wmt_ge_next(wmt);
+	struct wmt_ge_op *op;
+
+	if (!wmt_clip_to_bo(dst, x, y, &w, &h) || !wmt_clip_to_bo(src, x, y, &w, &h))
+		return;
+
+	op = wmt_ge_next(wmt, dst->handle, src->handle);
 
 	memset(op, 0, sizeof(*op));
 	op->type = WMT_GE_OP_BLIT;
@@ -138,8 +226,13 @@ static void
 WMTSolid(PixmapPtr pPix, int x1, int y1, int x2, int y2)
 {
 	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(pPix->drawable.pScreen));
-	struct wmt_ge_op *op = wmt_ge_next(wmt);
+	int w = x2 - x1, h = y2 - y1;
+	struct wmt_ge_op *op;
 
+	if (!wmt_clip_to_bo(wmt->op_dst_bo, x1, y1, &w, &h))
+		return;
+
+	op = wmt_ge_next(wmt, wmt->op_dst_bo->handle, 0);
 	memset(op, 0, sizeof(*op));
 	op->type = WMT_GE_OP_FILL;
 	op->rop = wmt->op_rop;
@@ -147,8 +240,8 @@ WMTSolid(PixmapPtr pPix, int x1, int y1, int x2, int y2)
 	op->dest_pitch = wmt->op_dst_pitch;
 	op->dest_x = x1;
 	op->dest_y = y1;
-	op->width = x2 - x1;
-	op->height = y2 - y1;
+	op->width = w;
+	op->height = h;
 	op->color = wmt->op_fg;
 }
 
@@ -189,8 +282,13 @@ static void
 WMTCopy(PixmapPtr pDst, int srcX, int srcY, int dstX, int dstY, int w, int h)
 {
 	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(pDst->drawable.pScreen));
-	struct wmt_ge_op *op = wmt_ge_next(wmt);
+	struct wmt_ge_op *op;
 
+	if (!wmt_clip_to_bo(wmt->op_dst_bo, dstX, dstY, &w, &h) ||
+	    !wmt_clip_to_bo(wmt->op_src_bo, srcX, srcY, &w, &h))
+		return;
+
+	op = wmt_ge_next(wmt, wmt->op_dst_bo->handle, wmt->op_src_bo->handle);
 	memset(op, 0, sizeof(*op));
 	op->type = WMT_GE_OP_BLIT;
 	op->rop = wmt->op_rop;
@@ -221,7 +319,7 @@ WMTDoneOp(PixmapPtr pPix)
 static void
 WMTWaitMarker(ScreenPtr pScreen, int marker)
 {
-	wmt_ge_flush(WMTPTR(xf86ScreenToScrn(pScreen)));
+	wmt_ge_sync(WMTPTR(xf86ScreenToScrn(pScreen)));
 }
 
 /* ------------------------------------------------------ Pixmap management */
@@ -349,7 +447,7 @@ WMTPrepareAccess(PixmapPtr pPix, int index)
 	if (!map)
 		return FALSE;
 
-	wmt_ge_flush(wmt);
+	wmt_ge_sync(wmt);
 	pPix->devPrivate.ptr = map;
 	return TRUE;
 }
@@ -378,7 +476,7 @@ WMTUploadToScreen(PixmapPtr pDst, int x, int y, int w, int h,
 	if (!priv || !priv->bo || !priv->bo->map)
 		return FALSE;
 
-	wmt_ge_flush(wmt);	/* finish queued GE ops before the CPU writes */
+	wmt_ge_sync(wmt);	/* finish queued GE ops before the CPU writes */
 	bpp = pDst->drawable.bitsPerPixel / 8;
 	dst = (char *)priv->bo->map + y * priv->pitch + x * bpp;
 	for (i = 0; i < h; i++)
@@ -400,7 +498,7 @@ WMTDownloadFromScreen(PixmapPtr pSrc, int x, int y, int w, int h,
 	if (!priv || !priv->bo || !priv->bo->map)
 		return FALSE;
 
-	wmt_ge_flush(wmt);
+	wmt_ge_sync(wmt);
 	bpp = pSrc->drawable.bitsPerPixel / 8;
 	s = (char *)priv->bo->map + y * priv->pitch + x * bpp;
 	for (i = 0; i < h; i++)
@@ -425,7 +523,8 @@ wmt_ge_overlap_selftest(ScrnInfoPtr pScrn)
 	WMTBO *bo;
 	uint32_t *p;
 	struct wmt_ge_op op;
-	struct wmt_ge_batch_req req;
+	struct wmt_ge_submit req;
+	struct wmt_ge_wait w;
 	int stride, x, y;
 	Bool ok = FALSE;
 
@@ -438,10 +537,10 @@ wmt_ge_overlap_selftest(ScrnInfoPtr pScrn)
 	if (!p)
 		goto done;
 
-	stride = bo->pitch / 4;
+	stride = bo->pitch / sizeof(*p);	/* row stride in p's units, not screen bpp */
 	for (y = 0; y < H; y++)
 		for (x = 0; x < W; x++)
-			p[y * stride + x] = 0xff000000u | (uint32_t)(y * W + x);
+			p[y * stride + x] = (uint32_t)(y * W + x);	/* unique per pixel */
 
 	memset(&op, 0, sizeof(op));
 	op.type = WMT_GE_OP_BLIT;
@@ -455,15 +554,22 @@ wmt_ge_overlap_selftest(ScrnInfoPtr pScrn)
 	op.width = W - 1;
 	op.height = H - 1;
 
-	req.ops = &op;
+	memset(&req, 0, sizeof(req));
+	req.ops = (uint64_t)(uintptr_t)&op;
 	req.num_ops = 1;
 
 	wmt_wc_barrier();
-	if (drmCommandWrite(wmt->fd, DRM_WMT_GE_BATCH, &req, sizeof(req)) == 0) {
-		uint32_t got = p[(H - 1) * stride + (W - 1)];
-		uint32_t want = 0xff000000u | (uint32_t)((H - 2) * W + (W - 2));
+	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_SUBMIT, &req) == 0) {
+		uint32_t got, want;
 
-		ok = (got == want);
+		memset(&w, 0, sizeof(w));
+		w.seqno = req.out_seqno;
+		/* only trust the result if the blit actually completed */
+		if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) == 0) {
+			got = p[(H - 1) * stride + (W - 1)];
+			want = (uint32_t)((H - 2) * W + (W - 2));
+			ok = (got == want);
+		}
 	}
 
 done:
@@ -498,7 +604,7 @@ WMTExaInit(ScreenPtr pScreen)
 	exa->flags = EXA_OFFSCREEN_PIXMAPS | EXA_HANDLES_PIXMAPS | EXA_MIXED_PIXMAPS;
 	exa->maxX = WMT_GE_MAX_DIM;
 	exa->maxY = WMT_GE_MAX_DIM;
-	exa->maxPitchBytes = WMT_GE_MAX_DIM * 4;
+	exa->maxPitchBytes = WMT_GE_MAX_DIM * WMT_BYTES_PP;
 	exa->pixmapOffsetAlign = 0;
 	exa->pixmapPitchAlign = 4;
 
