@@ -17,6 +17,7 @@
 #include "config.h"
 #endif
 
+#include <errno.h>
 #include <poll.h>
 
 #include "xf86.h"
@@ -50,7 +51,8 @@ wmt_drm_notify(int fd, int xevents, void *data)
 }
 
 /* Block until an outstanding flip reports completion (or clearly never will),
- * so a late event can never land in freed driver state. */
+ * so a late event can never land in freed driver state, and 'current' always
+ * tracks the buffer the kernel actually scanned out. */
 void
 WMTFlipDrain(WMTPtr wmt)
 {
@@ -58,12 +60,26 @@ WMTFlipDrain(WMTPtr wmt)
 
 	while (wmt->flip_pending && guard-- > 0) {
 		struct pollfd pfd = { .fd = wmt->fd, .events = POLLIN };
+		int r = poll(&pfd, 1, 50);
 
-		if (poll(&pfd, 1, 50) <= 0)
-			break;
-		wmt_drm_notify(wmt->fd, 0, wmt);
+		if (r > 0)
+			wmt_drm_notify(wmt->fd, 0, wmt);  /* consumes the event ->
+							     clears flip_pending + swaps current */
+		else if (r < 0 && errno != EINTR)
+			break;			/* hard fd error: resync below */
+		/* r == 0 (slice timeout) or EINTR: keep waiting out the guard budget */
 	}
-	wmt->flip_pending = FALSE;
+
+	if (wmt->flip_pending) {
+		/* The accepted flip's event never arrived in time (slow/wedged GE).
+		 * drmModePageFlip returned 0, so the kernel committed to presenting
+		 * 'back'; adopt it as current rather than leaving current naming the
+		 * on-screen buffer.  Every caller (LeaveVT/resize/CloseScreen) re-sets
+		 * the mode or frees the buffers next, so this is harmless, and a later
+		 * stale event now sees flip_pending FALSE and no-ops -- no double swap. */
+		wmt->current ^= 1;
+		wmt->flip_pending = FALSE;
+	}
 }
 
 /* Copy the changed regions of the shadow into the back buffer and flip to it. */
@@ -109,6 +125,12 @@ wmt_present(WMTPtr wmt)
 				    box[i].x1, box[i].y1, box[i].x2 - box[i].x1,
 				    box[i].y2 - box[i].y1);
 		wmt_ge_flush(wmt);
+
+		/* No flip happened, so the alternate buffer still owes this frame's
+		 * damage on top of what it already owed; carry it forward (clipped) so
+		 * the next successful flip's pre-blit replays it -- the DamageEmpty
+		 * below would otherwise drop it permanently. */
+		RegionUnion(&wmt->flip_region, &wmt->flip_region, &copy);
 	}
 
 	RegionUninit(&clip);
