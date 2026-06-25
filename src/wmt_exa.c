@@ -92,58 +92,87 @@ wmt_ge_flush(WMTPtr wmt)
 			       o->src_handle, o->src_pitch, o->src_x, o->src_y);
 	} else {
 		wmt->last_submit_seqno = req.out_seqno;
+		/* Stamp the seqno on every BO this batch touched (dst and src) so a
+		 * later per-BO wmt_ge_sync waits exactly the work that read or wrote it
+		 * -- last-TOUCH, since a CPU write must also wait a pending GE read (WAR). */
+		if (wmt->batch_dst_bo)
+			wmt->batch_dst_bo->last_seqno = req.out_seqno;
+		if (wmt->batch_src_bo)
+			wmt->batch_src_bo->last_seqno = req.out_seqno;
 	}
 
 	wmt->batch_count = 0;
-	wmt->batch_dst = 0;
-	wmt->batch_src = 0;
+	wmt->batch_dst_bo = NULL;
+	wmt->batch_src_bo = NULL;
 }
 
-/* Submit queued ops and block until the GE has completed them, so the CPU (or a
- * page flip) can safely observe the result. */
+/* Submit queued ops and block until the GE has finished everything that TOUCHED
+ * @bo (as dst or src), so the CPU can safely observe or overwrite it.  Waiting
+ * the per-BO seqno rather than the global last-submitted lets access to one
+ * surface proceed while unrelated GE work to other buffers is still in flight. */
 void
-wmt_ge_sync(WMTPtr wmt)
+wmt_ge_sync(WMTPtr wmt, WMTBO *bo)
 {
 	struct wmt_ge_wait w;
 
 	wmt_ge_flush(wmt);
 
-	/* last_submit_seqno == 0 means nothing has been submitted yet: the kernel
-	 * never assigns seqno 0, so it is an unambiguous "no work" sentinel. */
+	/* seqno 0 = never touched (the kernel never assigns 0); already-synced = skip. */
+	if (!bo || !bo->last_seqno || wmt_ge_passed(bo->last_synced, bo->last_seqno))
+		return;
+
+	memset(&w, 0, sizeof(w));
+	w.seqno = bo->last_seqno;
+	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) != 0)
+		xf86DrvMsgVerb(0, X_WARNING, 0, "GE wait for seqno %u failed: %s\n",
+			       w.seqno, strerror(errno));
+	/* Advance even on failure: a GE_WAIT error is terminal (ETIMEDOUT wedge / EIO
+	 * abandoned job) after the kernel's reset worker has already discarded the job,
+	 * so re-waiting only stalls the server; any partial data in this BO is inherent
+	 * to the wedge and is repaired by the next full repaint. */
+	bo->last_synced = bo->last_seqno;
+}
+
+/* Submit queued ops and block until the GE drains EVERYTHING -- the coarse
+ * barrier EXA's WaitMarker needs before an unrelated software fallback runs. */
+static void
+wmt_ge_drain_global(WMTPtr wmt)
+{
+	struct wmt_ge_wait w;
+
+	wmt_ge_flush(wmt);
+
 	if (!wmt->last_submit_seqno ||
 	    wmt_ge_passed(wmt->last_synced_seqno, wmt->last_submit_seqno))
 		return;
 
 	memset(&w, 0, sizeof(w));
 	w.seqno = wmt->last_submit_seqno;
-	/* drmIoctl already retries EINTR/EAGAIN; a failure here is a wedged engine
-	 * (ETIMEDOUT) or an abandoned job (EIO). Log it, but still advance the synced
-	 * seqno: re-waiting a dead job would only stall the server, and the kernel's
-	 * reset worker has already recovered the engine. */
 	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) != 0)
 		xf86DrvMsgVerb(0, X_WARNING, 0, "GE wait for seqno %u failed: %s\n",
 			       w.seqno, strerror(errno));
-	wmt->last_synced_seqno = wmt->last_submit_seqno;
+	wmt->last_synced_seqno = wmt->last_submit_seqno;	/* terminal failure: see wmt_ge_sync */
 }
 
 /* Reserve the next op slot.  Flush first if the batch is full, or if this op
  * targets a different dst/src than the queued batch (one dst per submit). */
 static struct wmt_ge_op *
-wmt_ge_next(WMTPtr wmt, uint32_t dst, uint32_t src)
+wmt_ge_next(WMTPtr wmt, WMTBO *dst, WMTBO *src)
 {
 	if (wmt->batch_count &&
-	    (dst != wmt->batch_dst || (src && wmt->batch_src && src != wmt->batch_src)))
+	    (dst != wmt->batch_dst_bo ||
+	     (src && wmt->batch_src_bo && src != wmt->batch_src_bo)))
 		wmt_ge_flush(wmt);
 	if (wmt->batch_count >= wmt->batch_max)
 		wmt_ge_flush(wmt);
 
-	/* A FILL passes src == 0 and must not disturb a recorded BLIT source: the
-	 * flush test above only compares sources when both are non-zero, so fills
+	/* A FILL passes src == NULL and must not disturb a recorded BLIT source: the
+	 * flush test above only compares sources when both are non-NULL, so fills
 	 * batch freely alongside blits to the same dst, and only an actual change of
 	 * source forces a flush. */
-	wmt->batch_dst = dst;
+	wmt->batch_dst_bo = dst;
 	if (src)
-		wmt->batch_src = src;
+		wmt->batch_src_bo = src;
 	return &wmt->batch[wmt->batch_count++];
 }
 
@@ -180,7 +209,7 @@ wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst, int x, int y, int w, int h)
 	if (!wmt_clip_to_bo(dst, x, y, &w, &h) || !wmt_clip_to_bo(src, x, y, &w, &h))
 		return;
 
-	op = wmt_ge_next(wmt, dst->handle, src->handle);
+	op = wmt_ge_next(wmt, dst, src);
 
 	memset(op, 0, sizeof(*op));
 	op->type = WMT_GE_OP_BLIT;
@@ -232,7 +261,7 @@ WMTSolid(PixmapPtr pPix, int x1, int y1, int x2, int y2)
 	if (!wmt_clip_to_bo(wmt->op_dst_bo, x1, y1, &w, &h))
 		return;
 
-	op = wmt_ge_next(wmt, wmt->op_dst_bo->handle, 0);
+	op = wmt_ge_next(wmt, wmt->op_dst_bo, NULL);
 	memset(op, 0, sizeof(*op));
 	op->type = WMT_GE_OP_FILL;
 	op->rop = wmt->op_rop;
@@ -288,7 +317,7 @@ WMTCopy(PixmapPtr pDst, int srcX, int srcY, int dstX, int dstY, int w, int h)
 	    !wmt_clip_to_bo(wmt->op_src_bo, srcX, srcY, &w, &h))
 		return;
 
-	op = wmt_ge_next(wmt, wmt->op_dst_bo->handle, wmt->op_src_bo->handle);
+	op = wmt_ge_next(wmt, wmt->op_dst_bo, wmt->op_src_bo);
 	memset(op, 0, sizeof(*op));
 	op->type = WMT_GE_OP_BLIT;
 	op->rop = wmt->op_rop;
@@ -319,7 +348,7 @@ WMTDoneOp(PixmapPtr pPix)
 static void
 WMTWaitMarker(ScreenPtr pScreen, int marker)
 {
-	wmt_ge_sync(WMTPTR(xf86ScreenToScrn(pScreen)));
+	wmt_ge_drain_global(WMTPTR(xf86ScreenToScrn(pScreen)));
 }
 
 /* ------------------------------------------------------ Pixmap management */
@@ -447,7 +476,7 @@ WMTPrepareAccess(PixmapPtr pPix, int index)
 	if (!map)
 		return FALSE;
 
-	wmt_ge_sync(wmt);
+	wmt_ge_sync(wmt, priv->bo);
 	pPix->devPrivate.ptr = map;
 	return TRUE;
 }
@@ -476,7 +505,7 @@ WMTUploadToScreen(PixmapPtr pDst, int x, int y, int w, int h,
 	if (!priv || !priv->bo || !priv->bo->map)
 		return FALSE;
 
-	wmt_ge_sync(wmt);	/* finish queued GE ops before the CPU writes */
+	wmt_ge_sync(wmt, priv->bo);	/* finish queued GE ops before the CPU writes */
 	bpp = pDst->drawable.bitsPerPixel / 8;
 	dst = (char *)priv->bo->map + y * priv->pitch + x * bpp;
 	for (i = 0; i < h; i++)
@@ -498,7 +527,7 @@ WMTDownloadFromScreen(PixmapPtr pSrc, int x, int y, int w, int h,
 	if (!priv || !priv->bo || !priv->bo->map)
 		return FALSE;
 
-	wmt_ge_sync(wmt);
+	wmt_ge_sync(wmt, priv->bo);
 	bpp = pSrc->drawable.bitsPerPixel / 8;
 	s = (char *)priv->bo->map + y * priv->pitch + x * bpp;
 	for (i = 0; i < h; i++)

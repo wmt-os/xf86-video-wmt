@@ -68,7 +68,7 @@ wmt_bo_new(int fd, int width, int height, Bool scanout)
 	return bo;
 }
 
-/* Lazily mmap the buffer for CPU access; returns the cached mapping. */
+/* Lazily mmap the buffer for CPU access; returns the stored (write-combined) mapping. */
 void *
 wmt_bo_map(int fd, WMTBO *bo)
 {

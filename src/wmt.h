@@ -39,6 +39,8 @@ typedef struct wmt_bo {
 	int		height;
 	uint32_t	fb_id;		/* drmModeAddFB id, or 0 if none       */
 	void	       *map;		/* mmap'd CPU pointer, or NULL         */
+	uint32_t	last_seqno;	/* seqno of the last GE batch to touch this BO (dst or src), 0 = none */
+	uint32_t	last_synced;	/* highest seqno already GE_WAITed for this BO */
 } WMTBO;
 
 /* Driver private for an accelerated (GE-addressable) pixmap.  EXA owns the
@@ -76,8 +78,8 @@ typedef struct {
 	struct wmt_ge_op *batch;	/* op accumulation buffer              */
 	unsigned	batch_count;
 	unsigned	batch_max;
-	uint32_t	batch_dst;	/* dst handle of the queued batch      */
-	uint32_t	batch_src;	/* src handle of the queued batch, or 0 */
+	WMTBO	       *batch_dst_bo;	/* dst BO of the queued batch          */
+	WMTBO	       *batch_src_bo;	/* src BO of the queued batch, or NULL */
 	uint32_t	last_submit_seqno;	/* seqno of the last GE_SUBMIT  */
 	uint32_t	last_synced_seqno;	/* last seqno we GE_WAITed on   */
 
@@ -127,7 +129,7 @@ void	 WMTKMSLeaveVT(ScrnInfoPtr pScrn);
 Bool	 WMTExaInit(ScreenPtr pScreen);
 void	 WMTExaCloseScreen(ScreenPtr pScreen);
 void	 wmt_ge_flush(WMTPtr wmt);		/* submit any queued ops (async) */
-void	 wmt_ge_sync(WMTPtr wmt);		/* submit + wait for GE completion */
+void	 wmt_ge_sync(WMTPtr wmt, WMTBO *bo);	/* submit + wait for GE work touching bo */
 void	 wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst,
 		     int x, int y, int w, int h);	/* queue a src->dst copy */
 
