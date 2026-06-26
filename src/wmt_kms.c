@@ -297,6 +297,8 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 	wmt->scanout[1] = s1;
 	wmt->screen_bo = shadow;
 	wmt->current = 0;
+	if (wmt->tearfree)
+		RegionEmpty(&wmt->flip_region);	/* buffer pair replaced; the post-resize repaint re-seeds owed damage */
 	pScrn->virtualX = width;
 	pScrn->virtualY = height;
 	pScrn->displayWidth = s0->pitch / WMT_BYTES_PP;

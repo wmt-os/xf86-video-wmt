@@ -21,8 +21,8 @@
 #include "wmt_drm_uapi.h"
 
 #define WMT_DRIVER_NAME	"wmt"
-#define WMT_VERSION_MAJOR 0
-#define WMT_VERSION_MINOR 1
+#define WMT_VERSION_MAJOR 1
+#define WMT_VERSION_MINOR 0
 #define WMT_VERSION_PATCH 0
 
 /* The GE and scanout operate at 32 bpp / depth 24. */

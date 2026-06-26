@@ -148,8 +148,8 @@ WMTBlockHandler(ScreenPtr pScreen, void *timeout)
 	(*pScreen->BlockHandler)(pScreen, timeout);
 	pScreen->BlockHandler = WMTBlockHandler;
 
-	/* Present the frame if TearFree has something to show and we own the
-	 * display; otherwise just submit this iteration's queued GE ops.  Either
+	/* Present the frame if TearFree has damage to show and no flip is in
+	 * flight; otherwise just submit this iteration's queued GE ops.  Either
 	 * way the per-primitive flush is gone: a drawing burst costs one batch
 	 * submission per frame. */
 	if (pScrn->vtSema && wmt->tearfree && wmt->damage && !wmt->flip_pending &&
@@ -183,16 +183,20 @@ WMTFlipInit(ScreenPtr pScreen)
 		RegionNull(&wmt->flip_region);
 		wmt->damage = DamageCreate(NULL, wmt_damage_destroyed,
 					   DamageReportNone, TRUE, pScreen, wmt);
-		if (!wmt->damage ||
-		    !SetNotifyFd(wmt->fd, wmt_drm_notify, X_NOTIFY_READ, wmt)) {
+		if (!wmt->damage) {
 			xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
 				   "TearFree setup failed; running without it\n");
-			if (wmt->damage)
-				DamageDestroy(wmt->damage);
 			wmt->tearfree = FALSE;
 		} else {
 			DamageRegister(&pScreen->GetScreenPixmap(pScreen)->drawable,
 				       wmt->damage);
+
+			if (!SetNotifyFd(wmt->fd, wmt_drm_notify, X_NOTIFY_READ, wmt)) {
+				xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
+					   "TearFree setup failed; running without it\n");
+				DamageDestroy(wmt->damage);
+				wmt->tearfree = FALSE;
+			}
 		}
 	}
 
