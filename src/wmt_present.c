@@ -153,8 +153,9 @@ WMTBlockHandler(ScreenPtr pScreen, void *timeout)
 	 * way the per-primitive flush is gone: a drawing burst costs one batch
 	 * submission per frame. */
 	if (pScrn->vtSema && wmt->tearfree && wmt->damage && !wmt->flip_pending &&
-	    wmt->mode_h > 0 && RegionNotEmpty(DamageRegion(wmt->damage)))
-		wmt_present(wmt);
+	    !wmt->dpms_off && wmt->mode_h > 0 && RegionNotEmpty(DamageRegion(wmt->damage)))
+		wmt_present(wmt);	/* skipped while DPMS-blanked: the CRTC is off, the
+					 * owed damage replays on the DPMS-on mode-set */
 	else
 		wmt_ge_flush(wmt);
 }

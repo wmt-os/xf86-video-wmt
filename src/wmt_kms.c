@@ -20,6 +20,8 @@
 #include "xf86.h"
 #include "xf86Crtc.h"
 
+#include <X11/extensions/dpmsconst.h>
+
 #include "wmt.h"
 
 /* -------------------------------------------------------- private records */
@@ -130,17 +132,59 @@ wmt_crtc_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 		crtc->rotation = rotation;
 		wmt->mode_w = mode->HDisplay;
 		wmt->mode_h = mode->VDisplay;
+		if (output_count > 0)
+			wmt->dpms_off = FALSE;	/* a real mode-set re-lights the panel */
 	}
 
 	free(output_ids);
 	return ret;
 }
 
+/*
+ * The internal panel's only power states are on and off, so any low-power DPMS
+ * mode blanks it.  Disabling the kernel CRTC runs the bridge/panel power-down,
+ * which cuts the PWM backlight (wired to the panel in the device tree); turning
+ * back on re-sets the mode and powers the panel up again.  xf86DPMSSet may drive
+ * the CRTC hook, the per-output hook, or both, in either order, so the work goes
+ * through one idempotent helper guarded by wmt->dpms_off.  The flag mirrors the
+ * panel: any successful mode-set clears it (wmt_crtc_set_mode_major), so a
+ * resize / RandR / VT re-enable while blanked cannot leave it stale.
+ */
+static void
+wmt_dpms_set(xf86CrtcPtr crtc, int mode)
+{
+	WMTPtr wmt;
+	Bool off = (mode != DPMSModeOn);
+
+	if (!crtc)
+		return;
+	wmt = WMTPTR(crtc->scrn);
+	if (off == wmt->dpms_off)
+		return;
+
+	if (off) {
+		WMTCrtcPriv *cp = crtc->driver_private;
+
+		/* Settle any in-flight flip so no event lands after the CRTC stops. */
+		if (wmt->tearfree)
+			WMTFlipDrain(wmt);
+		/* Commit the flag from the result, not the intent: a failed disable
+		 * leaves the panel lit, so dpms_off stays FALSE (presents keep running
+		 * and a later request retries). */
+		if (drmModeSetCrtc(wmt->fd, cp->crtc_id, 0, 0, 0, NULL, 0, NULL) == 0)
+			wmt->dpms_off = TRUE;
+	} else {
+		/* set_mode_major clears dpms_off on a successful relight and leaves it
+		 * set on failure, so the flag always tracks the real panel state. */
+		wmt_crtc_set_mode_major(crtc, &crtc->mode, crtc->rotation,
+					crtc->x, crtc->y);
+	}
+}
+
 static void
 wmt_crtc_dpms(xf86CrtcPtr crtc, int mode)
 {
-	/* The fixed internal panel has no power states to switch; the required
-	 * RandR hook is a no-op (as is the per-output one). */
+	wmt_dpms_set(crtc, mode);
 }
 
 static void
@@ -235,6 +279,7 @@ wmt_output_get_modes(xf86OutputPtr output)
 static void
 wmt_output_dpms(xf86OutputPtr output, int mode)
 {
+	wmt_dpms_set(output->crtc, mode);
 }
 
 static void

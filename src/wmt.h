@@ -71,6 +71,7 @@ typedef struct {
 	int		current;	/* index of the displayed buffer       */
 	uint32_t	crtc_id;	/* active CRTC, for page flips         */
 	int		mode_w, mode_h;	/* displayed resolution (flip clip)    */
+	Bool		dpms_off;	/* CRTC blanked by DPMS (panel + backlight off) */
 
 	/* EXA */
 	ExaDriverPtr	exa;
