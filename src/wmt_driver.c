@@ -1,8 +1,7 @@
 /*
- * WonderMedia WM8505 X.Org video driver -- DDX lifecycle.
+ * WonderMedia WM8505 X.Org Video Driver
  *
- * Module registration, platform probe, and the PreInit/ScreenInit machinery
- * that ties the KMS backend (wmt_kms.c) to EXA acceleration (wmt_exa.c).
+ * DDX Lifecycle
  *
  * Copyright (C) 2026 Logan Russell <me@lrussell.net>
  */
@@ -31,7 +30,7 @@
 
 #include "wmt.h"
 
-/* ------------------------------------------------------------ driver state */
+/* Driver State */
 
 static Bool WMTPreInit(ScrnInfoPtr pScrn, int flags);
 static Bool WMTScreenInit(ScreenPtr pScreen, int argc, char **argv);
@@ -53,10 +52,10 @@ typedef enum {
 static const OptionInfoRec WMTOptions[] = {
 	{ OPTION_ACCEL,		"Accel",	OPTV_BOOLEAN, {0}, FALSE },
 	{ OPTION_TEARFREE,	"TearFree",	OPTV_BOOLEAN, {0}, FALSE },
-	{ -1,			NULL,		OPTV_NONE,    {0}, FALSE },
+	{ -1,				NULL,		OPTV_NONE,    {0}, FALSE },
 };
 
-/* --------------------------------------------------------------- helpers */
+/* Helpers */
 
 static Bool
 WMTGetRec(ScrnInfoPtr pScrn)
@@ -132,7 +131,7 @@ WMTOpenDRM(ScrnInfoPtr pScrn)
 	return TRUE;
 }
 
-/* --------------------------------------------------------------- PreInit */
+/* PreInit */
 
 static Bool
 WMTPreInit(ScrnInfoPtr pScrn, int flags)
@@ -158,7 +157,6 @@ WMTPreInit(ScrnInfoPtr pScrn, int flags)
 	if (!WMTOpenDRM(pScrn))
 		return FALSE;
 
-	/* The GE and scanout are fixed at depth 24 / 32 bpp. */
 	if (!xf86SetDepthBpp(pScrn, WMT_DEPTH, WMT_DEPTH, WMT_BPP,
 			     Support32bppFb | SupportConvert24to32 |
 			     PreferConvert24to32))
@@ -209,7 +207,7 @@ WMTPreInit(ScrnInfoPtr pScrn, int flags)
 	return TRUE;
 }
 
-/* ------------------------------------------------------------ ScreenInit */
+/* ScreenInit */
 
 static Bool
 WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
@@ -225,15 +223,10 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 		xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
 			   "drmSetMaster failed: %s\n", strerror(errno));
 
-	/*
-	 * Displayed scanout buffer.  With TearFree there is also a second scanout
-	 * to flip to and an off-screen shadow the root renders into; otherwise the
-	 * root renders straight into the single displayed buffer.  TearFree needs
-	 * the GE to present, so it implies acceleration.
-	 */
 	if (!wmt->accel)
 		wmt->tearfree = FALSE;
 
+	/* Displayed scanout buffer (the sole buffer when TearFree is off) */
 	wmt->scanout[0] = wmt_bo_new(wmt->fd, w, h, TRUE);
 	if (!wmt->scanout[0]) {
 		xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
@@ -267,9 +260,7 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 	if (!miSetPixmapDepths())
 		return FALSE;
 
-	/* Pass NULL so EXA owns the front pixmap (an unpinned MIXED pixmap that
-	 * can take a GE-addressable copy) rather than pinning it to the scanout
-	 * mapping as plain system memory. */
+	/* Pass NULL so EXA manages the front pixmap allocation in MIXED mode */
 	if (!fbScreenInit(pScreen, NULL, pScrn->virtualX, pScrn->virtualY,
 			  pScrn->xDpi, pScrn->yDpi, pScrn->displayWidth,
 			  pScrn->bitsPerPixel))
@@ -340,9 +331,7 @@ WMTCreateScreenResources(ScreenPtr pScreen)
 	if (!ret)
 		return FALSE;
 
-	/* The front buffer migrates to its GE-addressable copy (the scanout, bound
-	 * in WMTCreatePixmap2) on first accelerated use; force it now so screen
-	 * drawing is accelerated from the first frame. */
+	/* Force front buffer migration to GPU copy for immediate acceleration */
 	if (wmt->accel && wmt->exa)
 		exaMoveInPixmap(pScreen->GetScreenPixmap(pScreen));
 
@@ -350,7 +339,6 @@ WMTCreateScreenResources(ScreenPtr pScreen)
 		xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
 			   "Failed to set the initial mode\n");
 
-	/* The root pixmap (the damage source) now exists and the mode is set. */
 	WMTFlipInit(pScreen);
 
 	return TRUE;
@@ -363,15 +351,13 @@ WMTCloseScreen(ScreenPtr pScreen)
 	WMTPtr wmt = WMTPTR(pScrn);
 	Bool ret;
 
-	/* Tear down the flip path while the screen pixmap (damage source) and DRM
-	 * master are still live, draining any flip so no late event arrives. */
+	/* Tear down page flips before closing screen/master */
 	WMTFlipFini(pScreen);
 
 	if (wmt->fd_owned)
 		drmDropMaster(wmt->fd);
 
-	/* Run the wrapped chain first; it includes exaCloseScreen (which tears
-	 * down EXA while the ExaDriverRec is still valid) then fb's CloseScreen. */
+	/* Call wrapped CloseScreen chain */
 	pScreen->CreateScreenResources = wmt->CreateScreenResources;
 	pScreen->CloseScreen = wmt->CloseScreen;
 	ret = (*pScreen->CloseScreen)(pScreen);
@@ -391,7 +377,7 @@ WMTCloseScreen(ScreenPtr pScreen)
 	return ret;
 }
 
-/* --------------------------------------------------------------- VT / mode */
+/* VT / Mode */
 
 static Bool
 WMTEnterVT(ScrnInfoPtr pScrn)
@@ -443,7 +429,7 @@ WMTFreeScreen(ScrnInfoPtr pScrn)
 	WMTFreeRec(pScrn);
 }
 
-/* ----------------------------------------------------------- driver glue */
+/* Driver Glue */
 
 static void
 WMTIdentify(int flags)
@@ -513,19 +499,19 @@ _X_EXPORT DriverRec WMT = {
 	1,
 	"wmt",
 	WMTIdentify,
-	NULL,			/* Probe (legacy PCI/ISA path unused) */
+	NULL, /* Probe (legacy PCI/ISA path unused) */
 	WMTAvailableOptions,
 	NULL,
 	0,
 	WMTDriverFunc,
-	NULL,			/* supported_devices */
-	NULL,			/* PciProbe */
+	NULL, /* supported_devices */
+	NULL, /* PciProbe */
 #ifdef XSERVER_PLATFORM_BUS
 	WMTPlatformProbe,
 #endif
 };
 
-/* ---------------------------------------------------------- module entry */
+/* Module Entry */
 
 static MODULESETUPPROTO(WMTSetup);
 

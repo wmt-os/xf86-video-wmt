@@ -1,8 +1,7 @@
 /*
- * WonderMedia WM8505 X.Org video driver -- GEM dumb buffer helpers.
+ * WonderMedia WM8505 X.Org Video Driver
  *
- * The 2D engine addresses surfaces by GEM handle (no byte offset), so every
- * accelerated surface is its own physically-contiguous dumb (CMA) buffer.
+ * GEM Dumb Buffer Helpers
  *
  * Copyright (C) 2026 Logan Russell <me@lrussell.net>
  */
@@ -20,7 +19,6 @@
 
 #include "wmt.h"
 
-/* Allocate a 32-bpp dumb buffer of the given pixel dimensions. */
 WMTBO *
 wmt_bo_create(int fd, int width, int height)
 {
@@ -49,10 +47,6 @@ wmt_bo_create(int fd, int width, int height)
 	return bo;
 }
 
-/*
- * Allocate a ready-to-use, zero-filled buffer: mapped for CPU access and,
- * when scanout is requested, wrapped in a KMS framebuffer for display.
- */
 WMTBO *
 wmt_bo_new(int fd, int width, int height, Bool scanout)
 {
@@ -68,7 +62,6 @@ wmt_bo_new(int fd, int width, int height, Bool scanout)
 	return bo;
 }
 
-/* Lazily mmap the buffer for CPU access; returns the stored (write-combined) mapping. */
 void *
 wmt_bo_map(int fd, WMTBO *bo)
 {
@@ -91,7 +84,6 @@ wmt_bo_map(int fd, WMTBO *bo)
 	return map;
 }
 
-/* Wrap the buffer in a KMS framebuffer object so it can be scanned out. */
 Bool
 wmt_bo_add_fb(int fd, WMTBO *bo)
 {

@@ -1,10 +1,7 @@
 /*
- * WonderMedia WM8505 X.Org video driver -- KMS / RandR-1.2 backend.
+ * WonderMedia WM8505 X.Org Video Driver
  *
- * A deliberately small single-CRTC, single-output modesetting backend built on
- * libdrm and the xf86Crtc (RandR-1.2) infrastructure.  The cursor is rendered
- * in software (the display pipe exposes a single plane) and rotation is left to
- * the server, so the CRTC needs only mode-set, DPMS and gamma hooks.
+ * KMS / RandR Backend
  *
  * Copyright (C) 2026 Logan Russell <me@lrussell.net>
  */
@@ -24,20 +21,20 @@
 
 #include "wmt.h"
 
-/* -------------------------------------------------------- private records */
+/* Private Records */
 
 typedef struct {
 	WMTPtr		wmt;
-	uint32_t	crtc_id;	/* kernel CRTC object id */
+	uint32_t	crtc_id;
 } WMTCrtcPriv;
 
 typedef struct {
-	WMTPtr			wmt;
-	uint32_t		output_id;	/* kernel connector id */
+	WMTPtr		wmt;
+	uint32_t	output_id;
 	drmModeConnectorPtr	conn;
 } WMTOutputPriv;
 
-/* ----------------------------------------------------- mode conversion */
+/* Mode Conversion */
 
 static void
 wmt_kmode_from_mode(drmModeModeInfo *kmode, const DisplayModeRec *mode)
@@ -84,7 +81,7 @@ wmt_mode_from_kmode(ScrnInfoPtr pScrn, drmModeModeInfo *kmode, DisplayModePtr mo
 	xf86SetModeCrtc(mode, pScrn->adjustFlags);
 }
 
-/* ------------------------------------------------------------- CRTC funcs */
+/* CRTC Functions */
 
 static Bool
 wmt_crtc_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
@@ -140,16 +137,6 @@ wmt_crtc_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 	return ret;
 }
 
-/*
- * The internal panel's only power states are on and off, so any low-power DPMS
- * mode blanks it.  Disabling the kernel CRTC runs the bridge/panel power-down,
- * which cuts the PWM backlight (wired to the panel in the device tree); turning
- * back on re-sets the mode and powers the panel up again.  xf86DPMSSet may drive
- * the CRTC hook, the per-output hook, or both, in either order, so the work goes
- * through one idempotent helper guarded by wmt->dpms_off.  The flag mirrors the
- * panel: any successful mode-set clears it (wmt_crtc_set_mode_major), so a
- * resize / RandR / VT re-enable while blanked cannot leave it stale.
- */
 static void
 wmt_dpms_set(xf86CrtcPtr crtc, int mode)
 {
@@ -165,17 +152,12 @@ wmt_dpms_set(xf86CrtcPtr crtc, int mode)
 	if (off) {
 		WMTCrtcPriv *cp = crtc->driver_private;
 
-		/* Settle any in-flight flip so no event lands after the CRTC stops. */
+		/* Settle outstanding flips before disabling CRTC */
 		if (wmt->tearfree)
 			WMTFlipDrain(wmt);
-		/* Commit the flag from the result, not the intent: a failed disable
-		 * leaves the panel lit, so dpms_off stays FALSE (presents keep running
-		 * and a later request retries). */
 		if (drmModeSetCrtc(wmt->fd, cp->crtc_id, 0, 0, 0, NULL, 0, NULL) == 0)
 			wmt->dpms_off = TRUE;
 	} else {
-		/* set_mode_major clears dpms_off on a successful relight and leaves it
-		 * set on failure, so the flag always tracks the real panel state. */
 		wmt_crtc_set_mode_major(crtc, &crtc->mode, crtc->rotation,
 					crtc->x, crtc->y);
 	}
@@ -193,7 +175,6 @@ wmt_crtc_gamma_set(xf86CrtcPtr crtc, CARD16 *red, CARD16 *green, CARD16 *blue,
 {
 	WMTCrtcPriv *cp = crtc->driver_private;
 
-	/* The display pipe may not implement a gamma LUT; ignore failure. */
 	drmModeCrtcSetGamma(cp->wmt->fd, cp->crtc_id, size, red, green, blue);
 }
 
@@ -210,7 +191,7 @@ static const xf86CrtcFuncsRec wmt_crtc_funcs = {
 	.destroy = wmt_crtc_destroy,
 };
 
-/* ----------------------------------------------------------- output funcs */
+/* Output Functions */
 
 static xf86OutputStatus
 wmt_output_detect(xf86OutputPtr output)
@@ -227,7 +208,6 @@ wmt_output_detect(xf86OutputPtr output)
 		if (conn->connection == DRM_MODE_DISCONNECTED)
 			return XF86OutputStatusDisconnected;
 	}
-	/* A fixed internal panel is always considered present. */
 	return XF86OutputStatusConnected;
 }
 
@@ -263,7 +243,6 @@ wmt_output_get_modes(xf86OutputPtr output)
 		modes = xf86ModesAdd(modes, mode);
 	}
 
-	/* Fall back to a sane default if the panel reports nothing. */
 	if (!modes) {
 		DisplayModePtr mode = xf86CVTMode(800, 480, 60.0, FALSE, FALSE);
 
@@ -303,7 +282,7 @@ static const xf86OutputFuncsRec wmt_output_funcs = {
 	.destroy = wmt_output_destroy,
 };
 
-/* --------------------------------------------------------- config / resize */
+/* Resize */
 
 static Bool
 wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
@@ -318,18 +297,17 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 	if (width == pScrn->virtualX && height == pScrn->virtualY)
 		return TRUE;
 
-	/* Submit any queued GE ops before their target buffers are freed below. */
 	wmt_ge_flush(wmt);
 	if (wmt->tearfree)
 		WMTFlipDrain(wmt);
 
-	/* Allocate the full buffer set up front so a failure changes nothing. */
+	/* Allocate scanout and shadow buffers */
 	s0 = wmt_bo_new(wmt->fd, width, height, TRUE);
 	if (wmt->tearfree && s0) {
 		s1 = wmt_bo_new(wmt->fd, width, height, TRUE);
 		shadow = wmt_bo_new(wmt->fd, width, height, FALSE);
 	} else {
-		shadow = s0;	/* render straight into the scanout */
+		shadow = s0;
 	}
 	if (!s0 || (wmt->tearfree && (!s1 || !shadow))) {
 		if (s0) wmt_bo_destroy(wmt->fd, s0);
@@ -343,7 +321,7 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 	wmt->screen_bo = shadow;
 	wmt->current = 0;
 	if (wmt->tearfree)
-		RegionEmpty(&wmt->flip_region);	/* buffer pair replaced; the post-resize repaint re-seeds owed damage */
+		RegionEmpty(&wmt->flip_region);
 	pScrn->virtualX = width;
 	pScrn->virtualY = height;
 	pScrn->displayWidth = s0->pitch / WMT_BYTES_PP;
@@ -368,7 +346,6 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 						crtc->x, crtc->y);
 	}
 
-	/* Release the previous buffers only once the new ones are scanning out. */
 	if (old[2] && old[2] != old[0])
 		wmt_bo_destroy(wmt->fd, old[2]);
 	if (old[0]) wmt_bo_destroy(wmt->fd, old[0]);
@@ -380,7 +357,7 @@ static const xf86CrtcConfigFuncsRec wmt_xf86crtc_config_funcs = {
 	.resize = wmt_xf86crtc_resize,
 };
 
-/* ---------------------------------------------------------------- PreInit */
+/* PreInit */
 
 Bool
 WMTKMSPreInit(ScrnInfoPtr pScrn)
@@ -413,7 +390,7 @@ WMTKMSPreInit(ScrnInfoPtr pScrn)
 		cp->crtc_id = res->crtcs[i];
 		crtc->driver_private = cp;
 
-		if (!wmt->crtc_id)	/* the single display pipe, for page flips */
+		if (!wmt->crtc_id)
 			wmt->crtc_id = res->crtcs[i];
 	}
 
@@ -449,12 +426,11 @@ WMTKMSPreInit(ScrnInfoPtr pScrn)
 
 	drmModeFreeResources(res);
 
-	/* Fixed internal panel: the screen never needs to grow past the mode. */
 	xf86InitialConfiguration(pScrn, FALSE);
 	return TRUE;
 }
 
-/* ------------------------------------------------------------- ScreenInit */
+/* ScreenInit */
 
 Bool
 WMTKMSScreenInit(ScreenPtr pScreen)
@@ -462,7 +438,7 @@ WMTKMSScreenInit(ScreenPtr pScreen)
 	return xf86CrtcScreenInit(pScreen);
 }
 
-/* --------------------------------------------------------------- VT switch */
+/* VT Switch */
 
 Bool
 WMTKMSEnterVT(ScrnInfoPtr pScrn)

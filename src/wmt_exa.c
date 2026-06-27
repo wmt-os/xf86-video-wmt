@@ -1,16 +1,7 @@
 /*
- * WonderMedia WM8505 X.Org video driver -- EXA acceleration.
+ * WonderMedia WM8505 X.Org Video Driver
  *
- * Maps EXA's solid-fill and copy primitives onto the kernel's asynchronous GE
- * job ring (DRM_IOCTL_WMT_GE_SUBMIT returns a seqno; DRM_IOCTL_WMT_GE_WAIT
- * blocks on it), batching primitives into one submission per drawing burst.
- *
- * The GE addresses surfaces by GEM handle, so each accelerated surface is its
- * own dumb buffer.  This uses the EXA_MIXED_PIXMAPS model: the server keeps a
- * cached system-memory copy of every pixmap (so Render compositing, which the
- * engine cannot do, runs correctly and quickly on cached memory) and EXA asks
- * the driver for a GE-addressable buffer only when a pixmap is actually
- * accelerated, migrating it in and out via UploadToScreen/DownloadFromScreen.
+ * EXA Acceleration
  *
  * Copyright (C) 2026 Logan Russell <me@lrussell.net>
  */
@@ -25,26 +16,19 @@
 
 #include "wmt.h"
 
-/* Write-combined buffer drain: ensure CPU writes to a BO are visible to the
- * GE (and the scanout) before a DMA reads them. */
 static inline void
 wmt_wc_barrier(void)
 {
 	__sync_synchronize();
 }
 
-/*
- * Map an X11 GX raster op to a GE 8-bit ROP code.  The GE blends either the
- * pattern (solid fills) or the source (copies) against the destination.
- * Returns -1 for ops we don't accelerate (EXA then falls back to software).
- */
 static int
 wmt_solid_rop(int alu)
 {
 	switch (alu) {
-	case GXcopy:	return WMT_GE_ROP_PAT_COPY;	/* P        */
-	case GXxor:	return WMT_GE_ROP_PAT_XOR;	/* P XOR D  */
-	default:	return -1;
+	case GXcopy:	return WMT_GE_ROP_PAT_COPY;
+	case GXxor:		return WMT_GE_ROP_PAT_XOR;
+	default:		return -1;
 	}
 }
 
@@ -52,16 +36,13 @@ static int
 wmt_copy_rop(int alu)
 {
 	switch (alu) {
-	case GXcopy:	return WMT_GE_ROP_SRC_COPY;	/* S        */
-	case GXxor:	return WMT_GE_ROP_SRC_XOR;	/* S XOR D  */
-	default:	return -1;
+	case GXcopy:	return WMT_GE_ROP_SRC_COPY;
+	case GXxor:		return WMT_GE_ROP_SRC_XOR;
+	default:		return -1;
 	}
 }
 
-/* Submit any queued GE operations.  Asynchronous: WMT_GE_SUBMIT returns a job
- * seqno without blocking, so the CPU keeps drawing while the GE drains.  Callers
- * that must observe GE output (CPU access, page flip) use wmt_ge_sync().  The
- * batch always holds a single dst (+ <=1 src), as the kernel ABI requires. */
+/* Submit queued operations */
 void
 wmt_ge_flush(WMTPtr wmt)
 {
@@ -70,15 +51,12 @@ wmt_ge_flush(WMTPtr wmt)
 	if (wmt->batch_count == 0)
 		return;
 
-	wmt_wc_barrier();	/* CPU writes to the WC batch targets reach DRAM first */
+	wmt_wc_barrier();
 
 	memset(&req, 0, sizeof(req));
 	req.ops = (uint64_t)(uintptr_t)wmt->batch;
 	req.num_ops = wmt->batch_count;
 
-	/* drmIoctl retries the bounded ring's EAGAIN until a slot frees. A failure
-	 * here silently drops drawing, so log it unconditionally (verb 0), with the
-	 * first op's geometry to pin down a rejected (out-of-bounds) primitive. */
 	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_SUBMIT, &req) != 0) {
 		struct wmt_ge_op *o = &wmt->batch[0];
 
@@ -92,9 +70,8 @@ wmt_ge_flush(WMTPtr wmt)
 			       o->src_handle, o->src_pitch, o->src_x, o->src_y);
 	} else {
 		wmt->last_submit_seqno = req.out_seqno;
-		/* Stamp the seqno on every BO this batch touched (dst and src) so a
-		 * later per-BO wmt_ge_sync waits exactly the work that read or wrote it
-		 * -- last-TOUCH, since a CPU write must also wait a pending GE read (WAR). */
+
+		/* Stamp seqno on BOs to track read/write operations */
 		if (wmt->batch_dst_bo)
 			wmt->batch_dst_bo->last_seqno = req.out_seqno;
 		if (wmt->batch_src_bo)
@@ -106,10 +83,7 @@ wmt_ge_flush(WMTPtr wmt)
 	wmt->batch_src_bo = NULL;
 }
 
-/* Submit queued ops and block until the GE has finished everything that TOUCHED
- * @bo (as dst or src), so the CPU can safely observe or overwrite it.  Waiting
- * the per-BO seqno rather than the global last-submitted lets access to one
- * surface proceed while unrelated GE work to other buffers is still in flight. */
+/* Sync GE work touching bo */
 void
 wmt_ge_sync(WMTPtr wmt, WMTBO *bo)
 {
@@ -117,7 +91,6 @@ wmt_ge_sync(WMTPtr wmt, WMTBO *bo)
 
 	wmt_ge_flush(wmt);
 
-	/* seqno 0 = never touched (the kernel never assigns 0); already-synced = skip. */
 	if (!bo || !bo->last_seqno || wmt_ge_passed(bo->last_synced, bo->last_seqno))
 		return;
 
@@ -126,15 +99,11 @@ wmt_ge_sync(WMTPtr wmt, WMTBO *bo)
 	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) != 0)
 		xf86DrvMsgVerb(0, X_WARNING, 0, "GE wait for seqno %u failed: %s\n",
 			       w.seqno, strerror(errno));
-	/* Advance even on failure: a GE_WAIT error is terminal (ETIMEDOUT wedge / EIO
-	 * abandoned job) after the kernel's reset worker has already discarded the job,
-	 * so re-waiting only stalls the server; any partial data in this BO is inherent
-	 * to the wedge and is repaired by the next full repaint. */
+
 	bo->last_synced = bo->last_seqno;
 }
 
-/* Submit queued ops and block until the GE drains EVERYTHING -- the coarse
- * barrier EXA's WaitMarker needs before an unrelated software fallback runs. */
+/* Global GE sync */
 static void
 wmt_ge_drain_global(WMTPtr wmt)
 {
@@ -151,11 +120,9 @@ wmt_ge_drain_global(WMTPtr wmt)
 	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) != 0)
 		xf86DrvMsgVerb(0, X_WARNING, 0, "GE wait for seqno %u failed: %s\n",
 			       w.seqno, strerror(errno));
-	wmt->last_synced_seqno = wmt->last_submit_seqno;	/* terminal failure: see wmt_ge_sync */
+	wmt->last_synced_seqno = wmt->last_submit_seqno;
 }
 
-/* Reserve the next op slot.  Flush first if the batch is full, or if this op
- * targets a different dst/src than the queued batch (one dst per submit). */
 static struct wmt_ge_op *
 wmt_ge_next(WMTPtr wmt, WMTBO *dst, WMTBO *src)
 {
@@ -166,27 +133,13 @@ wmt_ge_next(WMTPtr wmt, WMTBO *dst, WMTBO *src)
 	if (wmt->batch_count >= wmt->batch_max)
 		wmt_ge_flush(wmt);
 
-	/* A FILL passes src == NULL and must not disturb a recorded BLIT source: the
-	 * flush test above only compares sources when both are non-NULL, so fills
-	 * batch freely alongside blits to the same dst, and only an actual change of
-	 * source forces a flush. */
 	wmt->batch_dst_bo = dst;
 	if (src)
 		wmt->batch_src_bo = src;
 	return &wmt->batch[wmt->batch_count++];
 }
 
-/*
- * Clamp an op rectangle at (x, y) to a buffer's real extent, shrinking w and h.
- * Returns FALSE if nothing is left to draw.  The GE addresses raw buffers with
- * no clip register, yet EXA can hand us boxes that overrun a surface: its
- * Composite-to-Copy fast path inherits Render's "sample past the source"
- * semantics (unlike DIX-clipped CopyArea), so a source region may extend beyond
- * the source drawable.  An unclamped op would then read or write past the
- * allocation -- which the kernel rejects (silently dropping the draw) and can
- * wedge the engine -- so every emitter clips to the buffer first, matching the
- * software path that clips such reads to the drawable.
- */
+/* Clip coordinates to buffer bounds; EXA can request boxes that overrun */
 static Bool
 wmt_clip_to_bo(WMTBO *bo, int x, int y, int *w, int *h)
 {
@@ -199,8 +152,7 @@ wmt_clip_to_bo(WMTBO *bo, int x, int y, int *w, int *h)
 	return *w > 0 && *h > 0;
 }
 
-/* Queue a straight source-copy blit between two buffers (same coordinates in
- * each).  Used by the TearFree flip path; the caller submits with wmt_ge_flush. */
+/* Queue a straight source-copy blit between two buffers (same coordinates) */
 void
 wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst, int x, int y, int w, int h)
 {
@@ -226,7 +178,7 @@ wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst, int x, int y, int w, int h)
 	op->src_y = y;
 }
 
-/* ------------------------------------------------------------------ Solid */
+/* Solid */
 
 static Bool
 WMTPrepareSolid(PixmapPtr pPix, int alu, Pixel planemask, Pixel fg)
@@ -274,7 +226,7 @@ WMTSolid(PixmapPtr pPix, int x1, int y1, int x2, int y2)
 	op->color = wmt->op_fg;
 }
 
-/* ------------------------------------------------------------------- Copy */
+/* Copy */
 
 static Bool
 WMTPrepareCopy(PixmapPtr pSrc, PixmapPtr pDst, int dx, int dy,
@@ -294,8 +246,6 @@ WMTPrepareCopy(PixmapPtr pSrc, PixmapPtr pDst, int dx, int dy,
 	if (rop < 0)
 		return FALSE;
 
-	/* If the engine doesn't self-arbitrate overlapping blits, refuse the
-	 * reverse-direction self-copies that would otherwise corrupt. */
 	if (!wmt->ge_overlap_ok && s->bo == d->bo && (dx < 0 || dy < 0))
 		return FALSE;
 
@@ -333,17 +283,10 @@ WMTCopy(PixmapPtr pDst, int srcX, int srcY, int dstX, int dstY, int w, int h)
 	op->src_y = srcY;
 }
 
-/*
- * Solid and Copy share one no-op completion.  Queued GE ops are submitted
- * lazily -- at WaitMarker, before CPU access, or once per frame in the block
- * handler -- so a burst of primitives costs a single ioctl, not one each.
- */
 static void
 WMTDoneOp(PixmapPtr pPix)
 {
 }
-
-/* --------------------------------------------------------------- Sync */
 
 static void
 WMTWaitMarker(ScreenPtr pScreen, int marker)
@@ -351,13 +294,8 @@ WMTWaitMarker(ScreenPtr pScreen, int marker)
 	wmt_ge_drain_global(WMTPTR(xf86ScreenToScrn(pScreen)));
 }
 
-/* ------------------------------------------------------ Pixmap management */
+/* Pixmap Management */
 
-/*
- * MIXED model: a driver pixmap is created only for GE-addressable surfaces
- * (32-bpp, within the engine's coordinate range).  Returning NULL leaves the
- * pixmap in system memory, where the server renders it directly.
- */
 static void *
 WMTCreatePixmap2(ScreenPtr pScreen, int width, int height, int depth,
 		 int usage_hint, int bitsPerPixel, int *new_fb_pitch)
@@ -376,13 +314,7 @@ WMTCreatePixmap2(ScreenPtr pScreen, int width, int height, int depth,
 	if (!priv)
 		return NULL;
 
-	/*
-	 * Bind the root pixmap's GPU copy to screen_bo.  Without TearFree that is
-	 * the scanout itself, so screen drawing is GE-accelerated and shown with no
-	 * extra copy; with TearFree it is an off-screen shadow the flip path
-	 * presents.  Either way EXA migrates to a cached system copy for the
-	 * operations the engine can't do (Render), then back here.
-	 */
+	/* Bind root pixmap to screen shadow/scanout */
 	if (!wmt->screen_bound &&
 	    width == pScrn->virtualX && height == pScrn->virtualY) {
 		priv->bo = wmt->screen_bo;
@@ -414,18 +346,14 @@ WMTDestroyPixmap(ScreenPtr pScreen, void *driverPriv)
 	if (!priv)
 		return;
 
-	/* The scanout and shadow buffers are owned by the driver, never a pixmap. */
 	if (priv->bo && priv->bo != wmt->scanout[0] && priv->bo != wmt->scanout[1] &&
 	    priv->bo != wmt->screen_bo) {
-		/* Submit queued ops first; none may reference the freed handle. */
 		wmt_ge_flush(wmt);
 		wmt_bo_destroy(wmt->fd, priv->bo);
 	}
 	free(priv);
 }
 
-/* Only driver (BO-backed) pixmaps reach this hook in the MIXED model; expose
- * the buffer's mapping and stride to EXA as the GPU copy. */
 static Bool
 WMTModifyPixmapHeader(PixmapPtr pPix, int width, int height, int depth,
 		      int bitsPerPixel, int devKind, void *pPixData)
@@ -445,13 +373,10 @@ WMTModifyPixmapHeader(PixmapPtr pPix, int width, int height, int depth,
 		pPix->drawable.bitsPerPixel = bitsPerPixel;
 	pPix->drawable.serialNumber = NEXT_SERIAL_NUMBER;
 	pPix->devKind = priv->pitch;
-	pPix->devPrivate.ptr = priv->bo->map;	/* captured by EXA as fb_ptr */
+	pPix->devPrivate.ptr = priv->bo->map;
 	return TRUE;
 }
 
-/* MIXED's exaPixmapHasGpuCopy_mixed calls this unconditionally once a pixmap
- * has a driverPriv, so it must exist: a pixmap is GE-addressable iff it owns a
- * buffer object. */
 static Bool
 WMTPixmapIsOffscreen(PixmapPtr pPix)
 {
@@ -460,8 +385,6 @@ WMTPixmapIsOffscreen(PixmapPtr pPix)
 	return priv && priv->bo != NULL;
 }
 
-/* Direct CPU access to a driver pixmap's buffer: ensure GE output has landed,
- * then hand back the (write-combined) mapping. */
 static Bool
 WMTPrepareAccess(PixmapPtr pPix, int index)
 {
@@ -476,6 +399,7 @@ WMTPrepareAccess(PixmapPtr pPix, int index)
 	if (!map)
 		return FALSE;
 
+	/* Sync with GPU before CPU reads/writes */
 	wmt_ge_sync(wmt, priv->bo);
 	pPix->devPrivate.ptr = map;
 	return TRUE;
@@ -487,12 +411,11 @@ WMTFinishAccess(PixmapPtr pPix, int index)
 	WMTPixmapPriv *priv = WMT_PIXMAP_PRIV(pPix);
 
 	if (priv && priv->bo) {
-		wmt_wc_barrier();	/* flush CPU writes for the GE/scanout */
+		wmt_wc_barrier();
 		pPix->devPrivate.ptr = NULL;
 	}
 }
 
-/* Migrate a system-memory region into a driver pixmap's buffer. */
 static Bool
 WMTUploadToScreen(PixmapPtr pDst, int x, int y, int w, int h,
 		  char *src, int src_pitch)
@@ -505,7 +428,7 @@ WMTUploadToScreen(PixmapPtr pDst, int x, int y, int w, int h,
 	if (!priv || !priv->bo || !priv->bo->map)
 		return FALSE;
 
-	wmt_ge_sync(wmt, priv->bo);	/* finish queued GE ops before the CPU writes */
+	wmt_ge_sync(wmt, priv->bo);
 	bpp = pDst->drawable.bitsPerPixel / 8;
 	dst = (char *)priv->bo->map + y * priv->pitch + x * bpp;
 	for (i = 0; i < h; i++)
@@ -514,7 +437,6 @@ WMTUploadToScreen(PixmapPtr pDst, int x, int y, int w, int h,
 	return TRUE;
 }
 
-/* Migrate a driver pixmap's buffer back out to system memory. */
 static Bool
 WMTDownloadFromScreen(PixmapPtr pSrc, int x, int y, int w, int h,
 		      char *dst, int dst_pitch)
@@ -535,15 +457,9 @@ WMTDownloadFromScreen(PixmapPtr pSrc, int x, int y, int w, int h,
 	return TRUE;
 }
 
-/* ----------------------------------------------------- Overlap self-test */
+/* Overlap Self-Test */
 
-/*
- * The GE op interface exposes no copy-direction control, so determine once at
- * start-up whether the engine arbitrates overlapping blits internally.  A
- * forward-only engine would corrupt a down-right self-copy; detect that by
- * copying a uniquely-valued block onto itself shifted by (1,1) and checking
- * the far corner (which a naive forward copy would smear).
- */
+/* Test if the 2D engine arbitrates overlapping copies correctly */
 static void
 wmt_ge_overlap_selftest(ScrnInfoPtr pScrn)
 {
@@ -566,10 +482,10 @@ wmt_ge_overlap_selftest(ScrnInfoPtr pScrn)
 	if (!p)
 		goto done;
 
-	stride = bo->pitch / sizeof(*p);	/* row stride in p's units, not screen bpp */
+	stride = bo->pitch / sizeof(*p);
 	for (y = 0; y < H; y++)
 		for (x = 0; x < W; x++)
-			p[y * stride + x] = (uint32_t)(y * W + x);	/* unique per pixel */
+			p[y * stride + x] = (uint32_t)(y * W + x);	/* Unique per pixel */
 
 	memset(&op, 0, sizeof(op));
 	op.type = WMT_GE_OP_BLIT;
@@ -593,7 +509,6 @@ wmt_ge_overlap_selftest(ScrnInfoPtr pScrn)
 
 		memset(&w, 0, sizeof(w));
 		w.seqno = req.out_seqno;
-		/* only trust the result if the blit actually completed */
 		if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) == 0) {
 			got = p[(H - 1) * stride + (W - 1)];
 			want = (uint32_t)((H - 2) * W + (W - 2));
@@ -611,7 +526,7 @@ done:
 		      : "failed (reverse self-copies fall back to software)");
 }
 
-/* ----------------------------------------------------------- Init / fini */
+/* Init / Close */
 
 Bool
 WMTExaInit(ScreenPtr pScreen)
@@ -628,8 +543,6 @@ WMTExaInit(ScreenPtr pScreen)
 	exa->exa_major = EXA_VERSION_MAJOR;
 	exa->exa_minor = EXA_VERSION_MINOR;
 
-	/* MIXED is selected by HANDLES|MIXED together; MIXED alone falls through
-	 * to the classic model. */
 	exa->flags = EXA_OFFSCREEN_PIXMAPS | EXA_HANDLES_PIXMAPS | EXA_MIXED_PIXMAPS;
 	exa->maxX = WMT_GE_MAX_DIM;
 	exa->maxY = WMT_GE_MAX_DIM;
@@ -677,12 +590,6 @@ WMTExaInit(ScreenPtr pScreen)
 	return TRUE;
 }
 
-/*
- * Release the EXA driver record and batch buffer.  Must run *after* the
- * wrapped exaCloseScreen has executed (exaDriverInit installs that into the
- * CloseScreen chain and it reads the ExaDriverRec during teardown), so this is
- * called at the tail of WMTCloseScreen rather than before the chain.
- */
 void
 WMTExaCloseScreen(ScreenPtr pScreen)
 {

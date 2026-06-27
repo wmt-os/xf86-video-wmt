@@ -1,14 +1,7 @@
 /*
- * WonderMedia WM8505 X.Org video driver -- TearFree page-flipping.
+ * WonderMedia WM8505 X.Org Video Driver
  *
- * The root window renders into an off-screen shadow buffer (screen_bo).  Once
- * per frame, in the screen BlockHandler, the regions that changed are GE-blitted
- * into the back scanout buffer and a vsync'd page flip presents it; the engine
- * never writes to the buffer being scanned out, so the display never tears.
- *
- * Two scanout buffers alternate.  Because each buffer is only refreshed every
- * other flip, a present must also replay the *previous* frame's damage (which
- * landed in the other buffer) -- flip_region carries that forward.
+ * TearFree Page-Flipping
  *
  * Copyright (C) 2026 Logan Russell <me@lrussell.net>
  */
@@ -25,20 +18,19 @@
 
 #include "wmt.h"
 
-/* Page-flip completion: the buffer we flipped to is now the displayed one. */
 static void
 wmt_flip_complete(int fd, unsigned int seq, unsigned int sec, unsigned int usec,
 		  void *data)
 {
 	WMTPtr wmt = data;
 
-	if (!wmt->flip_pending)		/* a stale/late event must not desync buffers */
+	/* Page flip completed; swap current buffer index */
+	if (!wmt->flip_pending)
 		return;
 	wmt->current ^= 1;
 	wmt->flip_pending = FALSE;
 }
 
-/* DRM fd became readable: dispatch the queued flip-completion event(s). */
 static void
 wmt_drm_notify(int fd, int xevents, void *data)
 {
@@ -50,9 +42,6 @@ wmt_drm_notify(int fd, int xevents, void *data)
 	drmHandleEvent(fd, &ctx);
 }
 
-/* Block until an outstanding flip reports completion (or clearly never will),
- * so a late event can never land in freed driver state, and 'current' always
- * tracks the buffer the kernel actually scanned out. */
 void
 WMTFlipDrain(WMTPtr wmt)
 {
@@ -63,26 +52,18 @@ WMTFlipDrain(WMTPtr wmt)
 		int r = poll(&pfd, 1, 50);
 
 		if (r > 0)
-			wmt_drm_notify(wmt->fd, 0, wmt);  /* consumes the event ->
-							     clears flip_pending + swaps current */
+			/* Consumes the event -> clears flip_pending + swaps current */
+			wmt_drm_notify(wmt->fd, 0, wmt);
 		else if (r < 0 && errno != EINTR)
-			break;			/* hard fd error: resync below */
-		/* r == 0 (slice timeout) or EINTR: keep waiting out the guard budget */
+			break;
 	}
 
 	if (wmt->flip_pending) {
-		/* The accepted flip's event never arrived in time (slow/wedged GE).
-		 * drmModePageFlip returned 0, so the kernel committed to presenting
-		 * 'back'; adopt it as current rather than leaving current naming the
-		 * on-screen buffer.  Every caller (LeaveVT/resize/CloseScreen) re-sets
-		 * the mode or frees the buffers next, so this is harmless, and a later
-		 * stale event now sees flip_pending FALSE and no-ops -- no double swap. */
 		wmt->current ^= 1;
 		wmt->flip_pending = FALSE;
 	}
 }
 
-/* Copy the changed regions of the shadow into the back buffer and flip to it. */
 static void
 wmt_present(WMTPtr wmt)
 {
@@ -95,11 +76,11 @@ wmt_present(WMTPtr wmt)
 
 	RegionInit(&clip, &bounds, 1);
 
-	/* The back buffer also missed the previous frame's damage; replay both. */
 	RegionNull(&copy);
 	RegionUnion(&copy, damage, &wmt->flip_region);
 	RegionIntersect(&copy, &copy, &clip);
 
+	/* Copy damage region and schedule page flip */
 	box = RegionRects(&copy);
 	n = RegionNumRects(&copy);
 	for (i = 0; i < n; i++)
@@ -110,13 +91,9 @@ wmt_present(WMTPtr wmt)
 	if (drmModePageFlip(wmt->fd, wmt->crtc_id, wmt->scanout[back]->fb_id,
 			    DRM_MODE_PAGE_FLIP_EVENT, wmt) == 0) {
 		wmt->flip_pending = TRUE;
-		/* The old front becomes the back and will need this frame's damage. */
 		RegionCopy(&wmt->flip_region, damage);
 	} else {
-		/* Cannot flip (blanked): update the displayed buffer in place with
-		 * just this frame's damage -- it already holds everything older.  The
-		 * blit is submitted asynchronously (the kernel pins the live scanout BO
-		 * until the job retires); a later CPU read is re-fenced by wmt_ge_sync. */
+		/* Flip failed (blanked): draw in-place and save damage */
 		RegionIntersect(&copy, damage, &clip);
 		box = RegionRects(&copy);
 		n = RegionNumRects(&copy);
@@ -125,11 +102,6 @@ wmt_present(WMTPtr wmt)
 				    box[i].x1, box[i].y1, box[i].x2 - box[i].x1,
 				    box[i].y2 - box[i].y1);
 		wmt_ge_flush(wmt);
-
-		/* No flip happened, so the alternate buffer still owes this frame's
-		 * damage on top of what it already owed; carry it forward (clipped) so
-		 * the next successful flip's pre-blit replays it -- the DamageEmpty
-		 * below would otherwise drop it permanently. */
 		RegionUnion(&wmt->flip_region, &wmt->flip_region, &copy);
 	}
 
@@ -148,19 +120,13 @@ WMTBlockHandler(ScreenPtr pScreen, void *timeout)
 	(*pScreen->BlockHandler)(pScreen, timeout);
 	pScreen->BlockHandler = WMTBlockHandler;
 
-	/* Present the frame if TearFree has damage to show and no flip is in
-	 * flight; otherwise just submit this iteration's queued GE ops.  Either
-	 * way the per-primitive flush is gone: a drawing burst costs one batch
-	 * submission per frame. */
 	if (pScrn->vtSema && wmt->tearfree && wmt->damage && !wmt->flip_pending &&
 	    !wmt->dpms_off && wmt->mode_h > 0 && RegionNotEmpty(DamageRegion(wmt->damage)))
-		wmt_present(wmt);	/* skipped while DPMS-blanked: the CRTC is off, the
-					 * owed damage replays on the DPMS-on mode-set */
+		wmt_present(wmt);
 	else
 		wmt_ge_flush(wmt);
 }
 
-/* The screen damage was destroyed (by us, or with the screen pixmap). */
 static void
 wmt_damage_destroyed(DamagePtr damage, void *closure)
 {
@@ -175,12 +141,10 @@ WMTFlipInit(ScreenPtr pScreen)
 	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
 	WMTPtr wmt = WMTPTR(pScrn);
 
-	if (!wmt->exa)			/* no GE: nothing to batch or present */
+	if (!wmt->exa) /* No GE: nothing to batch or present */
 		return;
 
 	if (wmt->tearfree) {
-		/* All drawing to any window lands in the screen pixmap on this
-		 * non-composited screen, so its damage captures the whole display. */
 		RegionNull(&wmt->flip_region);
 		wmt->damage = DamageCreate(NULL, wmt_damage_destroyed,
 					   DamageReportNone, TRUE, pScreen, wmt);
@@ -201,8 +165,6 @@ WMTFlipInit(ScreenPtr pScreen)
 		}
 	}
 
-	/* Wrap the block handler in every accelerated mode: it coalesces each
-	 * frame's GE ops into a single submission (and presents, under TearFree). */
 	wmt->BlockHandler = pScreen->BlockHandler;
 	pScreen->BlockHandler = WMTBlockHandler;
 }
@@ -215,13 +177,13 @@ WMTFlipFini(ScreenPtr pScreen)
 	if (!wmt->exa)
 		return;
 
-	wmt_ge_flush(wmt);	/* don't strand queued ops when the batch is freed */
+	wmt_ge_flush(wmt);
 
 	if (wmt->tearfree) {
 		WMTFlipDrain(wmt);
 		RemoveNotifyFd(wmt->fd);
 		if (wmt->damage)
-			DamageDestroy(wmt->damage);	/* nulls wmt->damage via callback */
+			DamageDestroy(wmt->damage);
 		RegionUninit(&wmt->flip_region);
 	}
 	if (wmt->BlockHandler) {
