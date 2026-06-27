@@ -24,8 +24,7 @@ Depends:
  ${xviddriver:Depends},
 Provides:
  ${xviddriver:Provides},
-Description: X.Org X server -- WonderMedia WM8505 (GE 2D) display driver
- This package provides the "wmt" DDX driver for WMT OS.  It drives the
- WonderMedia WM8505 display controller through the in-kernel wmt-drm
- KMS device and accelerates 2D solid fills and copies on the WM8505
- Graphics Engine (GE) via the EXA acceleration architecture.
+Description: X.Org X server - WonderMedia WM8505 (GE 2D) display driver
+ The "wmt" DDX driver for the WonderMedia WM8505.  It drives the display
+ through the in-kernel wmt-drm KMS device and accelerates 2D solid fills
+ and copies on the Graphics Engine (GE) via EXA.

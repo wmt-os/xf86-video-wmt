@@ -1,6 +1,5 @@
 xserver-xorg-video-wmt (1.0.0) trixie; urgency=medium
 
-  * Initial release: EXA-accelerated DDX for the WonderMedia WM8505
-    Graphics Engine, driving the in-kernel wmt-drm KMS device.
+  * Initial release.
 
- -- Logan Russell <me@lrussell.net>  Sun, 21 Jun 2026 14:05:00 -0400
+ -- Logan Russell <me@lrussell.net>  Sat, 27 Jun 2026 04:23:35 -0400
