@@ -286,6 +286,7 @@ WMTCopy(PixmapPtr pDst, int srcX, int srcY, int dstX, int dstY, int w, int h)
 static void
 WMTDoneOp(PixmapPtr pPix)
 {
+	/* No-op: GE ops are lazily batched to save ioctls */
 }
 
 static void
