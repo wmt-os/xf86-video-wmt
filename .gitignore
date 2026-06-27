@@ -28,3 +28,4 @@ INSTALL
 config.guess
 config.sub
 *.tar.*
+/dist/
