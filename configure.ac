@@ -1,14 +1,4 @@
 #  Copyright (C) 2026 Logan Russell <me@lrussell.net>
-#
-#  Permission is hereby granted, free of charge, to any person obtaining a
-#  copy of this software and associated documentation files (the "Software"),
-#  to deal in the Software without restriction, including without limitation
-#  the rights to use, copy, modify, merge, publish, distribute, sublicense,
-#  and/or sell copies of the Software, and to permit persons to whom the
-#  Software is furnished to do so, subject to the following conditions:
-#
-#  The above copyright notice and this permission notice shall be included in
-#  all copies or substantial portions of the Software.
 
 AC_PREREQ([2.60])
 AC_INIT([xf86-video-wmt],
@@ -41,7 +31,7 @@ XORG_DRIVER_CHECK_EXT(RANDR, randrproto)
 XORG_DRIVER_CHECK_EXT(RENDER, renderproto)
 
 # Checks for pkg-config packages
-PKG_CHECK_MODULES(XORG, [xorg-server >= 1.21 xproto fontsproto $REQUIRED_MODULES])
+PKG_CHECK_MODULES(XORG, [xorg-server >= 21.1 xproto fontsproto $REQUIRED_MODULES])
 PKG_CHECK_MODULES(LIBDRM, [libdrm >= 2.4.0])
 
 # The driver module is installed into the X server's module directory

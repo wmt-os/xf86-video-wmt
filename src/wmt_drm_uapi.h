@@ -1,5 +1,7 @@
 /*
- * Userspace Mirror of the WonderMedia WM8505 DRM/KMS Userspace ABI
+ * WonderMedia WM8505 X.Org Video Driver
+ *
+ * Mirror of the WonderMedia WM8505 DRM/KMS Userspace ABI
  *
  * Copyright (C) 2026 Logan Russell <me@lrussell.net>
  */

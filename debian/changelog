@@ -1,4 +1,4 @@
-xserver-xorg-video-wmt (0.1.0) trixie; urgency=medium
+xserver-xorg-video-wmt (1.0.0) trixie; urgency=medium
 
   * Initial release: EXA-accelerated DDX for the WonderMedia WM8505
     Graphics Engine, driving the in-kernel wmt-drm KMS device.

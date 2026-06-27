@@ -14,19 +14,16 @@ wmt \- WonderMedia WM8505 video driver
 .SH DESCRIPTION
 .B wmt
 is an __xservername__ driver for the WonderMedia WM8505 display
-controller and its 2D Graphics Engine (GE).  It drives the display
-through the kernel's
+controller (GOVRH) and its 2D Graphics Engine (GE).  It drives the
+display through the kernel's
 .B wmt-drm
 KMS device and accelerates solid fills and copies using the GE via
 the EXA acceleration architecture.
-.SH SUPPORTED HARDWARE
-The
-.B wmt
-driver supports the WM8505 display controller (GOVRH) and 2D Graphics
-Engine exposed by the in-kernel
-.B wmt-drm
-DRM/KMS driver.
 .SH CONFIGURATION DETAILS
+Please refer to __xconfigfile__(__filemansuffix__) for general configuration
+details.  This section only covers configuration details specific to
+this driver.
+.PP
 The driver is normally selected automatically by an OutputClass that
 matches the
 .B wmt-drm
@@ -43,6 +40,6 @@ Enable or disable GE acceleration.  Default: enabled.
 Enable double-buffered, vblank-synchronised page flipping to eliminate
 tearing.  Default: enabled.
 .SH "SEE ALSO"
-__xservername__(__appmansuffix__), Xorg(__appmansuffix__), xorg.conf(__filemansuffix__)
+__xservername__(__appmansuffix__), __xconfigfile__(__filemansuffix__), Xserver(__appmansuffix__), X(__miscmansuffix__)
 .SH AUTHORS
 Logan Russell.

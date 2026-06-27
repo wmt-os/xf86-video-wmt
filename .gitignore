@@ -20,6 +20,8 @@ Makefile.in
 *.o
 *.lo
 *.la
+*.4
+/stamp-h1
 *~
 ChangeLog
 INSTALL
