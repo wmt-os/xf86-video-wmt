@@ -331,7 +331,7 @@ WMTCreateScreenResources(ScreenPtr pScreen)
 	if (!ret)
 		return FALSE;
 
-	/* Force front buffer migration to GPU copy for immediate acceleration */
+	/* Force front buffer migration to GE copy for immediate acceleration */
 	if (wmt->accel && wmt->exa)
 		exaMoveInPixmap(pScreen->GetScreenPixmap(pScreen));
 

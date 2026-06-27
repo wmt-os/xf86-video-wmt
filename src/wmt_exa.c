@@ -400,7 +400,7 @@ WMTPrepareAccess(PixmapPtr pPix, int index)
 	if (!map)
 		return FALSE;
 
-	/* Sync with GPU before CPU reads/writes */
+	/* Sync with GE before CPU reads/writes */
 	wmt_ge_sync(wmt, priv->bo);
 	pPix->devPrivate.ptr = map;
 	return TRUE;

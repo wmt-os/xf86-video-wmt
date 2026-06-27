@@ -44,7 +44,7 @@ typedef struct wmt_bo {
 
 /* Pixmap private */
 typedef struct {
-	WMTBO				*bo;				/* GPU buffer object */
+	WMTBO				*bo;				/* GE buffer object */
 	int					pitch;				/* Row stride in bytes */
 } WMTPixmapPriv;
 
