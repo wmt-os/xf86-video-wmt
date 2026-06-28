@@ -6,12 +6,12 @@ It drives the panel through the in-kernel `wmt-drm` DRM/KMS driver and accelerat
 
 ## Capabilities
 
-* KMS modesetting on the single GOVRH CRTC / DPI panel output.
-* EXA-accelerated `PrepareSolid` and `PrepareCopy` mapped onto GE fills and blits.
-* Pixmaps backed by GEM dumb (CMA) buffers, with graceful software fallback when contiguous memory is unavailable.
-* Optional TearFree double-buffered, vblank-synchronised page flipping.
+* KMS modesetting.
+* EXA-accelerated 2D solid fills and copies.
+* Pixmaps backed by GEM dumb buffers.
+* Optional TearFree page-flipping.
 
-The GE is a 32-bpp fill/copy/XOR engine with no alpha blending. Render compositing is handled by the X server in software; the resulting blits to the screen are GE-accelerated.
+The GE is a fill/copy/XOR engine with no alpha blending. Render compositing is handled by the X server in software; the resulting blits to the screen are GE-accelerated.
 
 ## Building
 
@@ -22,7 +22,7 @@ Standard autotools:
 make
 sudo make install
 ```
-Build-depends: `xserver-xorg-dev`, `libdrm-dev`, `xutils-dev`, `automake`, `libtool`, `pkgconf`.
+Build-depends: `xserver-xorg-dev libdrm-dev xutils-dev automake libtool pkgconf`
 
 ## License
 
