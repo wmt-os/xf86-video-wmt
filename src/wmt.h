@@ -57,7 +57,6 @@ typedef struct {
 
 	Bool				accel;				/* 2D acceleration enabled */
 	Bool				tearfree;			/* TearFree page-flipping enabled */
-	Bool				ge_overlap_ok;		/* True if hardware supports overlapping copies */
 
 	WMTBO				*scanout[2];		/* Front/back scanout buffers */
 	WMTBO				*screen_bo;			/* Root pixmap target (shadow or scanout) */

@@ -246,9 +246,6 @@ WMTPrepareCopy(PixmapPtr pSrc, PixmapPtr pDst, int dx, int dy,
 	if (rop < 0)
 		return FALSE;
 
-	if (!wmt->ge_overlap_ok && s->bo == d->bo && (dx < 0 || dy < 0))
-		return FALSE;
-
 	wmt->op_src_bo = s->bo;
 	wmt->op_src_pitch = exaGetPixmapPitch(pSrc);
 	wmt->op_dst_bo = d->bo;
@@ -458,75 +455,6 @@ WMTDownloadFromScreen(PixmapPtr pSrc, int x, int y, int w, int h,
 	return TRUE;
 }
 
-/* Overlap Self-Test */
-
-/* Test if the 2D engine arbitrates overlapping copies correctly */
-static void
-wmt_ge_overlap_selftest(ScrnInfoPtr pScrn)
-{
-	WMTPtr wmt = WMTPTR(pScrn);
-	const int W = 64, H = 64;
-	WMTBO *bo;
-	uint32_t *p;
-	struct wmt_ge_op op;
-	struct wmt_ge_submit req;
-	struct wmt_ge_wait w;
-	int stride, x, y;
-	Bool ok = FALSE;
-
-	wmt->ge_overlap_ok = FALSE;
-
-	bo = wmt_bo_create(wmt->fd, W, H);
-	if (!bo)
-		goto done;
-	p = wmt_bo_map(wmt->fd, bo);
-	if (!p)
-		goto done;
-
-	stride = bo->pitch / sizeof(*p);
-	for (y = 0; y < H; y++)
-		for (x = 0; x < W; x++)
-			p[y * stride + x] = (uint32_t)(y * W + x);	/* Unique per pixel */
-
-	memset(&op, 0, sizeof(op));
-	op.type = WMT_GE_OP_BLIT;
-	op.rop = WMT_GE_ROP_SRC_COPY;
-	op.dest_handle = op.src_handle = bo->handle;
-	op.dest_pitch = op.src_pitch = bo->pitch;
-	op.src_x = 0;
-	op.src_y = 0;
-	op.dest_x = 1;
-	op.dest_y = 1;
-	op.width = W - 1;
-	op.height = H - 1;
-
-	memset(&req, 0, sizeof(req));
-	req.ops = (uint64_t)(uintptr_t)&op;
-	req.num_ops = 1;
-
-	wmt_wc_barrier();
-	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_SUBMIT, &req) == 0) {
-		uint32_t got, want;
-
-		memset(&w, 0, sizeof(w));
-		w.seqno = req.out_seqno;
-		if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) == 0) {
-			got = p[(H - 1) * stride + (W - 1)];
-			want = (uint32_t)((H - 2) * W + (W - 2));
-			ok = (got == want);
-		}
-	}
-
-done:
-	if (bo)
-		wmt_bo_destroy(wmt->fd, bo);
-	wmt->ge_overlap_ok = ok;
-	xf86DrvMsg(pScrn->scrnIndex, X_INFO,
-		   "GE overlapping-blit self-test: %s\n",
-		   ok ? "passed (hardware arbitrates overlap)"
-		      : "failed (reverse self-copies fall back to software)");
-}
-
 /* Init / Close */
 
 Bool
@@ -587,7 +515,6 @@ WMTExaInit(ScreenPtr pScreen)
 		return FALSE;
 	}
 
-	wmt_ge_overlap_selftest(pScrn);
 	return TRUE;
 }
 
