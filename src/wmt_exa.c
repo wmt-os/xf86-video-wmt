@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 
 #include "wmt.h"
 
@@ -47,6 +48,8 @@ void
 wmt_ge_flush(WMTPtr wmt)
 {
 	struct wmt_ge_submit req;
+	struct wmt_ge_wait w;
+	struct wmt_ge_op *o;
 
 	if (wmt->batch_count == 0)
 		return;
@@ -57,9 +60,29 @@ wmt_ge_flush(WMTPtr wmt)
 	req.ops = (uint64_t)(uintptr_t)wmt->batch;
 	req.num_ops = wmt->batch_count;
 
-	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_SUBMIT, &req) != 0) {
-		struct wmt_ge_op *o = &wmt->batch[0];
+	for (;;) {
+		if (ioctl(wmt->fd, DRM_IOCTL_WMT_GE_SUBMIT, &req) == 0) {
+			wmt->last_submit_seqno = req.out_seqno;
 
+			/* Stamp seqno on BOs to track read/write operations */
+			if (wmt->batch_dst_bo)
+				wmt->batch_dst_bo->last_seqno = req.out_seqno;
+			if (wmt->batch_src_bo)
+				wmt->batch_src_bo->last_seqno = req.out_seqno;
+			break;
+		}
+
+		if (errno == EINTR)
+			continue;
+
+		/* Ring full: sleep for a free slot, then resubmit */
+		if (errno == EAGAIN) {
+			memset(&w, 0, sizeof(w));
+			if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) == 0)
+				continue;
+		}
+
+		o = &wmt->batch[0];
 		xf86DrvMsgVerb(0, X_WARNING, 0,
 			       "GE submit of %u ops failed: %s "
 			       "[op0 t=%u rop=%#x dst=%u pitch=%u @%u,%u %ux%u "
@@ -68,14 +91,7 @@ wmt_ge_flush(WMTPtr wmt)
 			       o->type, o->rop, o->dest_handle, o->dest_pitch,
 			       o->dest_x, o->dest_y, o->width, o->height,
 			       o->src_handle, o->src_pitch, o->src_x, o->src_y);
-	} else {
-		wmt->last_submit_seqno = req.out_seqno;
-
-		/* Stamp seqno on BOs to track read/write operations */
-		if (wmt->batch_dst_bo)
-			wmt->batch_dst_bo->last_seqno = req.out_seqno;
-		if (wmt->batch_src_bo)
-			wmt->batch_src_bo->last_seqno = req.out_seqno;
+		break;
 	}
 
 	wmt->batch_count = 0;
