@@ -1,5 +1,5 @@
-#! /bin/sh
-#  Copyright (C) 2026 Logan Russell <me@lrussell.net>
+#!/bin/sh
+# Copyright (C) 2026 Logan Russell <me@lrussell.net>
 
 srcdir=`dirname "$0"`
 test -z "$srcdir" && srcdir=.

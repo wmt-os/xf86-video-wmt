@@ -15,14 +15,23 @@ The GE is a fill/copy/XOR engine with no alpha blending. Render compositing is h
 
 ## Building
 
-Standard autotools:
+### Standard autotools
+
+Requires: `xserver-xorg-dev libdrm-dev xutils-dev automake libtool pkgconf`
 
 ```sh
 ./autogen.sh
 make
 sudo make install
 ```
-Build-depends: `xserver-xorg-dev libdrm-dev xutils-dev automake libtool pkgconf`
+
+### Cross-build deb package
+
+Requires: `mmdebstrap qemu-user-binfmt` (Build dependencies are automatically resolved inside the chroot.)
+
+```sh
+./build-deb.sh
+```
 
 ## License
 

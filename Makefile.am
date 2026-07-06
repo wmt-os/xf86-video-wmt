@@ -1,4 +1,4 @@
-#  Copyright (C) 2026 Logan Russell <me@lrussell.net>
+# Copyright (C) 2026 Logan Russell <me@lrussell.net>
 
 SUBDIRS = src man conf
 

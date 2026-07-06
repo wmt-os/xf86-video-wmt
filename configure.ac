@@ -1,4 +1,4 @@
-#  Copyright (C) 2026 Logan Russell <me@lrussell.net>
+# Copyright (C) 2026 Logan Russell <me@lrussell.net>
 
 AC_PREREQ([2.60])
 AC_INIT([xf86-video-wmt],
