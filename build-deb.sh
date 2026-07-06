@@ -19,6 +19,7 @@ trap 'rm -f "$tar"' EXIT
 tar -c -C "$SRC" --exclude=./.git --exclude=./dist -f "$tar" .
 
 mkdir -p "$OUT"
+rm -f "$OUT"/*.deb
 mmdebstrap --variant=buildd --arch=armel \
 	--customize-hook='mkdir "$1/src"' \
 	--customize-hook="tar-in $tar /src" \
