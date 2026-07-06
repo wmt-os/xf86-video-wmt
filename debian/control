@@ -12,9 +12,9 @@ Build-Depends:
  libtool,
 Standards-Version: 4.7.2
 Rules-Requires-Root: no
-Homepage: https://github.com/lrussell887/xf86-video-wmt
-Vcs-Git: https://github.com/lrussell887/xf86-video-wmt.git
-Vcs-Browser: https://github.com/lrussell887/xf86-video-wmt
+Homepage: https://github.com/wmt-os/xf86-video-wmt
+Vcs-Git: https://github.com/wmt-os/xf86-video-wmt.git
+Vcs-Browser: https://github.com/wmt-os/xf86-video-wmt
 
 Package: xserver-xorg-video-wmt
 Architecture: armel

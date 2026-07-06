@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: xf86-video-wmt
-Source: https://github.com/lrussell887/xf86-video-wmt
+Source: https://github.com/wmt-os/xf86-video-wmt
 
 Files: *
 Copyright: 2026 Logan Russell <me@lrussell.net>
