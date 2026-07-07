@@ -27,7 +27,7 @@ sudo make install
 
 ### Cross-build deb package
 
-Requires: `mmdebstrap qemu-user-binfmt` (Build dependencies are automatically resolved inside the chroot.)
+Requires: `mmdebstrap qemu-user-binfmt uidmap` (Build dependencies are automatically resolved inside the chroot.)
 
 ```sh
 ./build-deb.sh

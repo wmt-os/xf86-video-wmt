@@ -2,7 +2,7 @@
 # Build the xf86-video-wmt armel deb package
 #
 # Output: ./dist/*.deb (override: OUT=)
-# Requires: mmdebstrap qemu-user-binfmt
+# Requires: mmdebstrap qemu-user-binfmt uidmap
 #
 # Copyright (C) 2026 Logan Russell <me@lrussell.net>
 
