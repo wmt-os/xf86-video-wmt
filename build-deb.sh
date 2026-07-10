@@ -23,9 +23,17 @@ rm -f "$OUT"/*.deb
 mmdebstrap --variant=buildd --arch=armel \
 	--customize-hook='mkdir "$1/src"' \
 	--customize-hook="tar-in $tar /src" \
-	--chrooted-customize-hook='cd /src &&
-		apt-get -y --no-install-recommends build-dep ./ && dpkg-buildpackage -b -uc -us &&
-		mkdir /out && mv /*.deb /out/' \
+	--chrooted-customize-hook="$(cat <<-EOF
+		set -e
+
+		cd /src
+		apt-get -y --no-install-recommends build-dep ./
+		dpkg-buildpackage -b -uc -us
+
+		mkdir /out
+		mv /*.deb /out/
+		EOF
+	)" \
 	--customize-hook="sync-out /out $OUT" \
 	trixie /dev/null
 
