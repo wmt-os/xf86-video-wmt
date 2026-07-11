@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Build the xf86-video-wmt armel deb package
 #
 # Output: ./dist/*.deb (override: OUT=)
@@ -8,8 +8,9 @@
 
 set -eu
 
-SRC=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+SRC="$(cd "$(dirname "$0")" && pwd)"
 OUT=${OUT:-$SRC/dist}
+renice "${NICE:-19}" -p $$ >/dev/null 2>&1 || true
 
 export LC_ALL=C.UTF-8
 export LANG=C.UTF-8
@@ -20,7 +21,7 @@ tar -c -C "$SRC" --exclude=./.git --exclude=./dist -f "$tar" .
 
 mkdir -p "$OUT"
 rm -f "$OUT"/*.deb
-mmdebstrap --variant=buildd --arch=armel \
+mmdebstrap --variant=buildd --architectures=armel \
 	--customize-hook='mkdir "$1/src"' \
 	--customize-hook="tar-in $tar /src" \
 	--chrooted-customize-hook="$(cat <<-EOF
@@ -28,7 +29,7 @@ mmdebstrap --variant=buildd --arch=armel \
 
 		cd /src
 		apt-get -y --no-install-recommends build-dep ./
-		dpkg-buildpackage -b -uc -us
+		dpkg-buildpackage -b -uc -us -j$(nproc)
 
 		mkdir /out
 		mv /*.deb /out/
