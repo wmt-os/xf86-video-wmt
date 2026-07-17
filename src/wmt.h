@@ -22,7 +22,7 @@
 
 #define WMT_DRIVER_NAME		"wmt"
 #define WMT_VERSION_MAJOR	1
-#define WMT_VERSION_MINOR	0
+#define WMT_VERSION_MINOR	1
 #define WMT_VERSION_PATCH	0
 
 #define WMT_BPP				32

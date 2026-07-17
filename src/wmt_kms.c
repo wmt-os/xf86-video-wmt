@@ -10,13 +10,17 @@
 #include "config.h"
 #endif
 
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "xf86.h"
 #include "xf86Crtc.h"
 
+#include <X11/Xatom.h>
 #include <X11/extensions/dpmsconst.h>
 
 #include "wmt.h"
@@ -32,6 +36,8 @@ typedef struct {
 	WMTPtr		wmt;
 	uint32_t	output_id;
 	drmModeConnectorPtr	conn;
+	char		bl_path[128];	/* sysfs brightness file */
+	INT32		bl_max;
 } WMTOutputPriv;
 
 /* Mode Conversion */
@@ -191,6 +197,68 @@ static const xf86CrtcFuncsRec wmt_crtc_funcs = {
 	.destroy = wmt_crtc_destroy,
 };
 
+/* Backlight */
+
+static Atom wmt_backlight_atom;
+
+static int
+wmt_backlight_read(const char *path)
+{
+	char buf[16];
+	int fd, n;
+
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return -1;
+	buf[n] = '\0';
+	return atoi(buf);
+}
+
+static Bool
+wmt_backlight_write(const char *path, INT32 level)
+{
+	char buf[16];
+	int fd, n;
+	Bool ok;
+
+	fd = open(path, O_WRONLY | O_CLOEXEC);
+	if (fd < 0)
+		return FALSE;
+	n = snprintf(buf, sizeof(buf), "%d", level);
+	ok = write(fd, buf, n) == n;
+	close(fd);
+	return ok;
+}
+
+static void
+wmt_backlight_probe(WMTOutputPriv *op)
+{
+	DIR *dir = opendir("/sys/class/backlight");
+	struct dirent *ent;
+	char path[sizeof(op->bl_path)];
+	int max;
+
+	if (!dir)
+		return;
+	while (!op->bl_path[0] && (ent = readdir(dir))) {
+		if (ent->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path),
+			 "/sys/class/backlight/%s/max_brightness", ent->d_name);
+		max = wmt_backlight_read(path);
+		if (max < 1)
+			continue;
+		snprintf(op->bl_path, sizeof(op->bl_path),
+			 "/sys/class/backlight/%s/brightness", ent->d_name);
+		op->bl_max = max;
+	}
+	closedir(dir);
+}
+
 /* Output Functions */
 
 static xf86OutputStatus
@@ -256,9 +324,74 @@ wmt_output_get_modes(xf86OutputPtr output)
 }
 
 static void
+wmt_output_create_resources(xf86OutputPtr output)
+{
+	WMTOutputPriv *op = output->driver_private;
+	INT32 range[2] = { 0, 0 };
+	INT32 level;
+
+	if (!op->bl_path[0])
+		wmt_backlight_probe(op);
+	if (!op->bl_path[0])
+		return;
+
+	wmt_backlight_atom = MakeAtom("Backlight", 9, TRUE);
+	level = wmt_backlight_read(op->bl_path);
+	if (level < 0)
+		return;
+
+	range[1] = op->bl_max;
+	RRConfigureOutputProperty(output->randr_output, wmt_backlight_atom,
+				  FALSE, TRUE, FALSE, 2, range);
+	RRChangeOutputProperty(output->randr_output, wmt_backlight_atom,
+			       XA_INTEGER, 32, PropModeReplace, 1, &level,
+			       FALSE, FALSE);
+}
+
+static void
 wmt_output_dpms(xf86OutputPtr output, int mode)
 {
 	wmt_dpms_set(output->crtc, mode);
+}
+
+static Bool
+wmt_output_set_property(xf86OutputPtr output, Atom property,
+			RRPropertyValuePtr value)
+{
+	WMTOutputPriv *op = output->driver_private;
+	INT32 level;
+
+	if (!op->bl_path[0] || property != wmt_backlight_atom)
+		return TRUE;	/* not ours; let the server store it */
+
+	if (value->type != XA_INTEGER || value->format != 32 ||
+	    value->size != 1)
+		return FALSE;
+	level = *(INT32 *)value->data;
+	if (level < 0 || level > op->bl_max)
+		return FALSE;
+
+	return wmt_backlight_write(op->bl_path, level);
+}
+
+static Bool
+wmt_output_get_property(xf86OutputPtr output, Atom property)
+{
+	WMTOutputPriv *op = output->driver_private;
+	INT32 level;
+
+	if (!op->bl_path[0] || property != wmt_backlight_atom)
+		return FALSE;
+
+	/* The console and hotkeys write sysfs behind us; re-sync */
+	level = wmt_backlight_read(op->bl_path);
+	if (level < 0)
+		return FALSE;
+
+	RRChangeOutputProperty(output->randr_output, wmt_backlight_atom,
+			       XA_INTEGER, 32, PropModeReplace, 1, &level,
+			       FALSE, FALSE);
+	return TRUE;
 }
 
 static void
@@ -275,10 +408,13 @@ wmt_output_destroy(xf86OutputPtr output)
 }
 
 static const xf86OutputFuncsRec wmt_output_funcs = {
+	.create_resources = wmt_output_create_resources,
 	.dpms = wmt_output_dpms,
 	.detect = wmt_output_detect,
 	.mode_valid = wmt_output_mode_valid,
 	.get_modes = wmt_output_get_modes,
+	.set_property = wmt_output_set_property,
+	.get_property = wmt_output_get_property,
 	.destroy = wmt_output_destroy,
 };
 

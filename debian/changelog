@@ -1,3 +1,9 @@
+xserver-xorg-video-wmt (1.1.0) trixie; urgency=medium
+
+  * Add the RandR Backlight output property.
+
+ -- Logan Russell <me@lrussell.net>  Fri, 17 Jul 2026 02:56:09 -0400
+
 xserver-xorg-video-wmt (1.0.0) trixie; urgency=medium
 
   * Initial release.
