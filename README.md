@@ -10,6 +10,7 @@ It drives the panel through the in-kernel `wmt-drm` DRM/KMS driver and accelerat
 * EXA-accelerated 2D solid fills and copies.
 * Pixmaps backed by GEM dumb buffers.
 * Optional TearFree page-flipping.
+* Backlight control via RandR.
 
 The GE is a fill/copy/XOR engine with no alpha blending. Render compositing is handled by the X server in software; the resulting blits to the screen are GE-accelerated.
 
