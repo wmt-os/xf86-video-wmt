@@ -30,10 +30,10 @@
 struct wmt_ge_op {
 	uint32_t type;
 	uint32_t rop;
-	uint32_t dest_handle;
-	uint32_t dest_pitch;
-	uint32_t dest_x;
-	uint32_t dest_y;
+	uint32_t dst_handle;
+	uint32_t dst_pitch;
+	uint32_t dst_x;
+	uint32_t dst_y;
 	uint32_t width;
 	uint32_t height;
 	uint32_t color;

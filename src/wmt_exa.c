@@ -88,8 +88,8 @@ wmt_ge_flush(WMTPtr wmt)
 			       "[op0 t=%u rop=%#x dst=%u pitch=%u @%u,%u %ux%u "
 			       "src=%u pitch=%u @%u,%u]\n",
 			       wmt->batch_count, strerror(errno),
-			       o->type, o->rop, o->dest_handle, o->dest_pitch,
-			       o->dest_x, o->dest_y, o->width, o->height,
+			       o->type, o->rop, o->dst_handle, o->dst_pitch,
+			       o->dst_x, o->dst_y, o->width, o->height,
 			       o->src_handle, o->src_pitch, o->src_x, o->src_y);
 		break;
 	}
@@ -182,10 +182,10 @@ wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst, int x, int y, int w, int h)
 	memset(op, 0, sizeof(*op));
 	op->type = WMT_GE_OP_BLIT;
 	op->rop = WMT_GE_ROP_SRC_COPY;
-	op->dest_handle = dst->handle;
-	op->dest_pitch = dst->pitch;
-	op->dest_x = x;
-	op->dest_y = y;
+	op->dst_handle = dst->handle;
+	op->dst_pitch = dst->pitch;
+	op->dst_x = x;
+	op->dst_y = y;
 	op->width = w;
 	op->height = h;
 	op->src_handle = src->handle;
@@ -233,10 +233,10 @@ WMTSolid(PixmapPtr pPix, int x1, int y1, int x2, int y2)
 	memset(op, 0, sizeof(*op));
 	op->type = WMT_GE_OP_FILL;
 	op->rop = wmt->op_rop;
-	op->dest_handle = wmt->op_dst_bo->handle;
-	op->dest_pitch = wmt->op_dst_pitch;
-	op->dest_x = x1;
-	op->dest_y = y1;
+	op->dst_handle = wmt->op_dst_bo->handle;
+	op->dst_pitch = wmt->op_dst_pitch;
+	op->dst_x = x1;
+	op->dst_y = y1;
 	op->width = w;
 	op->height = h;
 	op->color = wmt->op_fg;
@@ -284,10 +284,10 @@ WMTCopy(PixmapPtr pDst, int srcX, int srcY, int dstX, int dstY, int w, int h)
 	memset(op, 0, sizeof(*op));
 	op->type = WMT_GE_OP_BLIT;
 	op->rop = wmt->op_rop;
-	op->dest_handle = wmt->op_dst_bo->handle;
-	op->dest_pitch = wmt->op_dst_pitch;
-	op->dest_x = dstX;
-	op->dest_y = dstY;
+	op->dst_handle = wmt->op_dst_bo->handle;
+	op->dst_pitch = wmt->op_dst_pitch;
+	op->dst_x = dstX;
+	op->dst_y = dstY;
 	op->width = w;
 	op->height = h;
 	op->src_handle = wmt->op_src_bo->handle;
