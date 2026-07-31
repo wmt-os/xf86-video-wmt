@@ -252,6 +252,7 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 	}
 	if (!wmt->screen_bo)
 		wmt->screen_bo = wmt->scanout[0];
+	wmt->screen_bound = FALSE;
 
 	miClearVisualTypes();
 	if (!miSetVisualTypes(pScrn->depth, miGetDefaultVisualMask(pScrn->depth),
@@ -260,8 +261,9 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 	if (!miSetPixmapDepths())
 		return FALSE;
 
-	/* Pass NULL so EXA manages the front pixmap allocation in MIXED mode */
-	if (!fbScreenInit(pScreen, NULL, pScrn->virtualX, pScrn->virtualY,
+	/* EXA owns the front pixmap when accelerated */
+	if (!fbScreenInit(pScreen, wmt->accel ? NULL : wmt->screen_bo->map,
+			  pScrn->virtualX, pScrn->virtualY,
 			  pScrn->xDpi, pScrn->yDpi, pScrn->displayWidth,
 			  pScrn->bitsPerPixel))
 		return FALSE;
@@ -285,9 +287,8 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 	xf86SetSilkenMouse(pScreen);
 
 	if (wmt->accel && !WMTExaInit(pScreen)) {
-		xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-			   "EXA initialisation failed; running unaccelerated\n");
-		wmt->accel = FALSE;
+		xf86DrvMsg(pScrn->scrnIndex, X_ERROR, "EXA initialization failed\n");
+		return FALSE;
 	}
 
 	miDCInitialize(pScreen, xf86GetPointerScreenFuncs());
@@ -521,7 +522,7 @@ static XF86ModuleVersionInfo WMTVersRec = {
 	MODINFOSTRING1,
 	MODINFOSTRING2,
 	XORG_VERSION_CURRENT,
-	WMT_VERSION_MAJOR, WMT_VERSION_MINOR, WMT_VERSION_PATCH,
+	PACKAGE_VERSION_MAJOR, PACKAGE_VERSION_MINOR, PACKAGE_VERSION_PATCHLEVEL,
 	ABI_CLASS_VIDEODRV,
 	ABI_VIDEODRV_VERSION,
 	MOD_CLASS_VIDEODRV,

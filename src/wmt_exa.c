@@ -17,12 +17,6 @@
 
 #include "wmt.h"
 
-static inline void
-wmt_wc_barrier(void)
-{
-	__sync_synchronize();
-}
-
 static int
 wmt_solid_rop(int alu)
 {
@@ -43,18 +37,23 @@ wmt_copy_rop(int alu)
 	}
 }
 
+static int
+wmt_ge_wait(WMTPtr wmt, uint32_t seqno)
+{
+	struct wmt_ge_wait w = { .seqno = seqno, .timeout_us = WMT_GE_WAIT_MAX_US };
+
+	return drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w);
+}
+
 /* Submit queued operations */
 void
 wmt_ge_flush(WMTPtr wmt)
 {
 	struct wmt_ge_submit req;
-	struct wmt_ge_wait w;
 	struct wmt_ge_op *o;
 
 	if (wmt->batch_count == 0)
 		return;
-
-	wmt_wc_barrier();
 
 	memset(&req, 0, sizeof(req));
 	req.ops = (uint64_t)(uintptr_t)wmt->batch;
@@ -76,11 +75,8 @@ wmt_ge_flush(WMTPtr wmt)
 			continue;
 
 		/* Ring full: sleep for a free slot, then resubmit */
-		if (errno == EAGAIN) {
-			memset(&w, 0, sizeof(w));
-			if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) == 0)
-				continue;
-		}
+		if (errno == EAGAIN && wmt_ge_wait(wmt, 0) == 0)
+			continue;
 
 		o = &wmt->batch[0];
 		xf86DrvMsgVerb(0, X_WARNING, 0,
@@ -103,18 +99,16 @@ wmt_ge_flush(WMTPtr wmt)
 void
 wmt_ge_sync(WMTPtr wmt, WMTBO *bo)
 {
-	struct wmt_ge_wait w;
-
 	wmt_ge_flush(wmt);
 
-	if (!bo || !bo->last_seqno || wmt_ge_passed(bo->last_synced, bo->last_seqno))
+	if (!bo || !bo->last_seqno || bo->last_synced == bo->last_seqno)
 		return;
 
-	memset(&w, 0, sizeof(w));
-	w.seqno = bo->last_seqno;
-	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) != 0)
+	if (wmt_ge_wait(wmt, bo->last_seqno) != 0) {
 		xf86DrvMsgVerb(0, X_WARNING, 0, "GE wait for seqno %u failed: %s\n",
-			       w.seqno, strerror(errno));
+			       bo->last_seqno, strerror(errno));
+		return;
+	}
 
 	bo->last_synced = bo->last_seqno;
 }
@@ -123,19 +117,17 @@ wmt_ge_sync(WMTPtr wmt, WMTBO *bo)
 static void
 wmt_ge_drain_global(WMTPtr wmt)
 {
-	struct wmt_ge_wait w;
-
 	wmt_ge_flush(wmt);
 
 	if (!wmt->last_submit_seqno ||
-	    wmt_ge_passed(wmt->last_synced_seqno, wmt->last_submit_seqno))
+	    wmt->last_synced_seqno == wmt->last_submit_seqno)
 		return;
 
-	memset(&w, 0, sizeof(w));
-	w.seqno = wmt->last_submit_seqno;
-	if (drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w) != 0)
+	if (wmt_ge_wait(wmt, wmt->last_submit_seqno) != 0) {
 		xf86DrvMsgVerb(0, X_WARNING, 0, "GE wait for seqno %u failed: %s\n",
-			       w.seqno, strerror(errno));
+			       wmt->last_submit_seqno, strerror(errno));
+		return;
+	}
 	wmt->last_synced_seqno = wmt->last_submit_seqno;
 }
 
@@ -319,7 +311,7 @@ WMTCreatePixmap2(ScreenPtr pScreen, int width, int height, int depth,
 	WMTPixmapPriv *priv;
 	WMTBO *bo;
 
-	if (!wmt->accel || bitsPerPixel != WMT_BPP ||
+	if (!wmt->accel || bitsPerPixel != WMT_BPP || depth != WMT_DEPTH ||
 	    width <= 0 || height <= 0 ||
 	    width > WMT_GE_MAX_DIM || height > WMT_GE_MAX_DIM)
 		return NULL;
@@ -424,10 +416,8 @@ WMTFinishAccess(PixmapPtr pPix, int index)
 {
 	WMTPixmapPriv *priv = WMT_PIXMAP_PRIV(pPix);
 
-	if (priv && priv->bo) {
-		wmt_wc_barrier();
+	if (priv && priv->bo)
 		pPix->devPrivate.ptr = NULL;
-	}
 }
 
 static Bool
@@ -447,7 +437,6 @@ WMTUploadToScreen(PixmapPtr pDst, int x, int y, int w, int h,
 	dst = (char *)priv->bo->map + y * priv->pitch + x * bpp;
 	for (i = 0; i < h; i++)
 		memcpy(dst + i * priv->pitch, src + i * src_pitch, (size_t)w * bpp);
-	wmt_wc_barrier();
 	return TRUE;
 }
 
@@ -514,7 +503,7 @@ WMTExaInit(ScreenPtr pScreen)
 	exa->UploadToScreen = WMTUploadToScreen;
 	exa->DownloadFromScreen = WMTDownloadFromScreen;
 
-	wmt->batch_max = 1024;
+	wmt->batch_max = WMT_GE_MAX_OPS;
 	wmt->batch = malloc(wmt->batch_max * sizeof(struct wmt_ge_op));
 	if (!wmt->batch) {
 		free(exa);

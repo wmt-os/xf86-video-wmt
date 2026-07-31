@@ -1,3 +1,14 @@
+xserver-xorg-video-wmt (1.2.0) trixie; urgency=medium
+
+  * Rebind the root pixmap each server generation.
+  * Keep depth 32 pixmaps in software; the GE preserves destination alpha.
+  * Honor GE wait failures and request the full kernel wait timeout.
+  * Drain pending flips before modesets.
+  * Resolve unnotified flips from the kernel CRTC state instead of waiting.
+  * Fail screen init if EXA setup fails; map the framebuffer when unaccelerated.
+
+ -- Logan Russell <me@lrussell.net>  Fri, 31 Jul 2026 03:11:58 -0400
+
 xserver-xorg-video-wmt (1.1.0) trixie; urgency=medium
 
   * Add the RandR Backlight output property.

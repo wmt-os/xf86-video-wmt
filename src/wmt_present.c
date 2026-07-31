@@ -45,21 +45,20 @@ wmt_drm_notify(int fd, int xevents, void *data)
 void
 WMTFlipDrain(WMTPtr wmt)
 {
-	int guard = 100;
+	struct pollfd pfd = { .fd = wmt->fd, .events = POLLIN };
 
-	while (wmt->flip_pending && guard-- > 0) {
-		struct pollfd pfd = { .fd = wmt->fd, .events = POLLIN };
-		int r = poll(&pfd, 1, 50);
+	while (wmt->flip_pending && poll(&pfd, 1, 0) > 0)
+		wmt_drm_notify(wmt->fd, 0, wmt);
 
-		if (r > 0)
-			/* Consumes the event -> clears flip_pending + swaps current */
-			wmt_drm_notify(wmt->fd, 0, wmt);
-		else if (r < 0 && errno != EINTR)
-			break;
-	}
-
+	/* Unresolved: adopt kernel state; SetCrtc serializes behind the flip */
 	if (wmt->flip_pending) {
-		wmt->current ^= 1;
+		drmModeCrtcPtr crtc = drmModeGetCrtc(wmt->fd, wmt->crtc_id);
+
+		if (crtc) {
+			if (crtc->buffer_id == wmt->scanout[wmt->current ^ 1]->fb_id)
+				wmt->current ^= 1;
+			drmModeFreeCrtc(crtc);
+		}
 		wmt->flip_pending = FALSE;
 	}
 }

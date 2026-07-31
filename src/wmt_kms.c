@@ -97,13 +97,17 @@ wmt_crtc_set_mode_major(xf86CrtcPtr crtc, DisplayModePtr mode,
 	WMTPtr wmt = WMTPTR(pScrn);
 	WMTCrtcPriv *cp = crtc->driver_private;
 	xf86CrtcConfigPtr config = XF86_CRTC_CONFIG_PTR(pScrn);
-	WMTBO *bo = wmt->scanout[wmt->current];
+	WMTBO *bo;
 	drmModeModeInfo kmode;
 	uint32_t *output_ids;
 	int output_count = 0;
 	int i;
 	Bool ret = TRUE;
 
+	if (wmt->tearfree)
+		WMTFlipDrain(wmt);
+
+	bo = wmt->scanout[wmt->current];
 	if (!bo || !bo->fb_id)
 		return FALSE;
 

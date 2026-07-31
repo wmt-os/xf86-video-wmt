@@ -14,7 +14,8 @@
 
 /* Limits */
 #define WMT_GE_MAX_DIM		2048
-#define WMT_GE_MAX_OPS		8192
+#define WMT_GE_MAX_OPS		1024
+#define WMT_GE_WAIT_MAX_US	1000000
 
 /* OP Types */
 #define WMT_GE_OP_FILL		0x1

@@ -2,7 +2,7 @@
 
 AC_PREREQ([2.60])
 AC_INIT([xf86-video-wmt],
-        [1.1.0],
+        [1.2.0],
         [me@lrussell.net],
         [xf86-video-wmt])
 

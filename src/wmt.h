@@ -21,9 +21,6 @@
 #include "wmt_drm_uapi.h"
 
 #define WMT_DRIVER_NAME		"wmt"
-#define WMT_VERSION_MAJOR	1
-#define WMT_VERSION_MINOR	1
-#define WMT_VERSION_PATCH	0
 
 #define WMT_BPP				32
 #define WMT_DEPTH			24
@@ -97,12 +94,6 @@ typedef struct {
 
 #define WMTPTR(scrn)			((WMTPtr)((scrn)->driverPrivate))
 #define WMT_PIXMAP_PRIV(pPix)	((WMTPixmapPriv *)exaGetPixmapDriverPrivate(pPix))
-
-static inline Bool
-wmt_ge_passed(uint32_t done, uint32_t target)
-{
-	return (int32_t)(done - target) >= 0;
-}
 
 /* wmt_bo.c */
 WMTBO	*wmt_bo_create(int fd, int width, int height);
