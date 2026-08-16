@@ -40,8 +40,6 @@ static Bool WMTEnterVT(ScrnInfoPtr pScrn);
 static void WMTLeaveVT(ScrnInfoPtr pScrn);
 static Bool WMTSwitchMode(ScrnInfoPtr pScrn, DisplayModePtr mode);
 static void WMTAdjustFrame(ScrnInfoPtr pScrn, int x, int y);
-static ModeStatus WMTValidMode(ScrnInfoPtr pScrn, DisplayModePtr mode,
-			       Bool verbose, int flags);
 static void WMTFreeScreen(ScrnInfoPtr pScrn);
 
 typedef enum {
@@ -416,14 +414,6 @@ WMTAdjustFrame(ScrnInfoPtr pScrn, int x, int y)
 		crtc->funcs->set_mode_major(crtc, &crtc->mode, crtc->rotation, x, y);
 }
 
-static ModeStatus
-WMTValidMode(ScrnInfoPtr pScrn, DisplayModePtr mode, Bool verbose, int flags)
-{
-	if (mode->HDisplay > WMT_GE_MAX_DIM || mode->VDisplay > WMT_GE_MAX_DIM)
-		return MODE_BAD;
-	return MODE_OK;
-}
-
 static void
 WMTFreeScreen(ScrnInfoPtr pScrn)
 {
@@ -490,7 +480,6 @@ WMTPlatformProbe(DriverPtr driver, int entity_num, int flags,
 	pScrn->EnterVT = WMTEnterVT;
 	pScrn->LeaveVT = WMTLeaveVT;
 	pScrn->FreeScreen = WMTFreeScreen;
-	pScrn->ValidMode = WMTValidMode;
 
 	return TRUE;
 }

@@ -1,3 +1,11 @@
+xserver-xorg-video-wmt (1.2.1) trixie; urgency=medium
+
+  * Reject modes the panel did not publish instead of inventing a fallback.
+  * Drop the 2D engine size checks from mode validation; EXA already
+    enforces them.
+
+ -- Logan Russell <me@lrussell.net>  Sun, 16 Aug 2026 08:00:41 -0400
+
 xserver-xorg-video-wmt (1.2.0) trixie; urgency=medium
 
   * Rebind the root pixmap each server generation.

@@ -286,9 +286,25 @@ wmt_output_detect(xf86OutputPtr output)
 static int
 wmt_output_mode_valid(xf86OutputPtr output, DisplayModePtr mode)
 {
-	if (mode->HDisplay > WMT_GE_MAX_DIM || mode->VDisplay > WMT_GE_MAX_DIM)
+	WMTOutputPriv *op = output->driver_private;
+	drmModeConnectorPtr conn = op->conn;
+	int i;
+
+	if (!conn)
 		return MODE_BAD;
-	return MODE_OK;
+
+	/* Only the timings the panel published are safe to program */
+	for (i = 0; i < conn->count_modes; i++) {
+		DisplayModeRec kmode;
+		Bool equal;
+
+		wmt_mode_from_kmode(output->scrn, &conn->modes[i], &kmode);
+		equal = xf86ModesEqual(&kmode, mode);
+		free(kmode.name);
+		if (equal)
+			return MODE_OK;
+	}
+	return MODE_BAD;
 }
 
 static DisplayModePtr
@@ -313,15 +329,6 @@ wmt_output_get_modes(xf86OutputPtr output)
 
 		wmt_mode_from_kmode(output->scrn, &conn->modes[i], mode);
 		modes = xf86ModesAdd(modes, mode);
-	}
-
-	if (!modes) {
-		DisplayModePtr mode = xf86CVTMode(800, 480, 60.0, FALSE, FALSE);
-
-		if (mode) {
-			mode->type = M_T_DRIVER | M_T_PREFERRED;
-			modes = xf86ModesAdd(modes, mode);
-		}
 	}
 
 	return modes;
