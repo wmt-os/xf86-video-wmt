@@ -135,6 +135,7 @@ WMTPreInit(ScrnInfoPtr pScrn, int flags)
 	WMTPtr wmt;
 	rgb defaultWeight = { 0, 0, 0 };
 	Gamma zeros = { 0.0, 0.0, 0.0 };
+	drmVersionPtr v;
 
 	if (pScrn->numEntities != 1)
 		return FALSE;
@@ -154,9 +155,23 @@ WMTPreInit(ScrnInfoPtr pScrn, int flags)
 	if (!WMTOpenDRM(pScrn))
 		return FALSE;
 
-	if (!xf86SetDepthBpp(pScrn, WMT_DEPTH, WMT_DEPTH, WMT_BPP,
-			     Support32bppFb | SupportConvert24to32 |
-			     PreferConvert24to32))
+	/* Format fields and CONVERT ops need kernel wmt-drm 1.2 */
+	v = drmGetVersion(wmt->fd);
+	if (!v) {
+		xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
+			   "Failed to query the kernel DRM driver version\n");
+		return FALSE;
+	}
+	if (v->version_major != 1 || v->version_minor < 2) {
+		xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
+			   "Kernel wmt-drm 1.2 or newer is required, found %d.%d\n",
+			   v->version_major, v->version_minor);
+		drmFreeVersion(v);
+		return FALSE;
+	}
+	drmFreeVersion(v);
+
+	if (!xf86SetDepthBpp(pScrn, WMT_DEPTH, WMT_DEPTH, WMT_BPP, 0))
 		return FALSE;
 	if (pScrn->depth != WMT_DEPTH) {
 		xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
@@ -220,36 +235,33 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 		xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
 			   "drmSetMaster failed: %s\n", strerror(errno));
 
-	if (!wmt->accel)
-		wmt->tearfree = FALSE;
-
-	/* Displayed scanout buffer (the sole buffer when TearFree is off) */
+	/* Scanout buffer and RGB565 shadow */
 	wmt->scanout[0] = wmt_bo_new(wmt->fd, w, h, TRUE);
-	if (!wmt->scanout[0]) {
+	wmt->screen_bo = wmt_bo_new(wmt->fd, w, h, FALSE);
+	if (!wmt->scanout[0] || !wmt->screen_bo) {
 		xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
-			   "Failed to allocate scanout buffer\n");
+			   "Failed to allocate screen buffers\n");
 		return FALSE;
 	}
 	wmt->current = 0;
-	pScrn->displayWidth = wmt->scanout[0]->pitch / WMT_BYTES_PP;
+	pScrn->displayWidth = wmt->screen_bo->pitch / WMT_BYTES_PP;
 
+	/* Second scanout buffer for page flips */
 	if (wmt->tearfree) {
 		wmt->scanout[1] = wmt_bo_new(wmt->fd, w, h, TRUE);
-		wmt->screen_bo = wmt_bo_new(wmt->fd, w, h, FALSE);
-		if (!wmt->scanout[1] || !wmt->screen_bo) {
+		if (!wmt->scanout[1]) {
 			xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
 				   "TearFree buffer allocation failed; disabling it\n");
-			if (wmt->scanout[1])
-				wmt_bo_destroy(wmt->fd, wmt->scanout[1]);
-			if (wmt->screen_bo)
-				wmt_bo_destroy(wmt->fd, wmt->screen_bo);
-			wmt->scanout[1] = wmt->screen_bo = NULL;
 			wmt->tearfree = FALSE;
 		}
 	}
-	if (!wmt->screen_bo)
-		wmt->screen_bo = wmt->scanout[0];
 	wmt->screen_bound = FALSE;
+
+	/* Operation batch shared by EXA and the present path */
+	wmt->batch = malloc(WMT_GE_MAX_OPS * sizeof(struct drm_wmt_ge_op));
+	if (!wmt->batch)
+		return FALSE;
+	wmt->batch_count = 0;
 
 	miClearVisualTypes();
 	if (!miSetVisualTypes(pScrn->depth, miGetDefaultVisualMask(pScrn->depth),
@@ -337,9 +349,7 @@ WMTCreateScreenResources(ScreenPtr pScreen)
 		xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
 			   "Failed to set the initial mode\n");
 
-	WMTFlipInit(pScreen);
-
-	return TRUE;
+	return WMTFlipInit(pScreen);
 }
 
 static Bool
@@ -363,12 +373,11 @@ WMTCloseScreen(ScreenPtr pScreen)
 	if (wmt->exa)
 		WMTExaCloseScreen(pScreen);
 
-	if (wmt->screen_bo && wmt->screen_bo != wmt->scanout[0])
-		wmt_bo_destroy(wmt->fd, wmt->screen_bo);
-	if (wmt->scanout[0])
-		wmt_bo_destroy(wmt->fd, wmt->scanout[0]);
-	if (wmt->scanout[1])
-		wmt_bo_destroy(wmt->fd, wmt->scanout[1]);
+	free(wmt->batch);
+	wmt->batch = NULL;
+	wmt_bo_destroy(wmt->fd, wmt->screen_bo);
+	wmt_bo_destroy(wmt->fd, wmt->scanout[0]);
+	wmt_bo_destroy(wmt->fd, wmt->scanout[1]);
 	wmt->screen_bo = wmt->scanout[0] = wmt->scanout[1] = NULL;
 
 	pScrn->vtSema = FALSE;

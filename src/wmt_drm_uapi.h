@@ -20,6 +20,7 @@
 /* OP Types */
 #define WMT_GE_OP_FILL		0x1
 #define WMT_GE_OP_BLIT		0x2
+#define WMT_GE_OP_CONVERT	0x3
 
 /* ROP Codes */
 #define WMT_GE_ROP_PAT_XOR	0x5a
@@ -42,6 +43,8 @@ struct drm_wmt_ge_op {
 	uint32_t src_pitch;
 	uint32_t src_x;
 	uint32_t src_y;
+	uint32_t dst_format;
+	uint32_t src_format;
 };
 
 /* GE Submit Request */

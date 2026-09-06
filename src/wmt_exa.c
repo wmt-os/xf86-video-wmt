@@ -163,9 +163,9 @@ wmt_clip_to_bo(WMTBO *bo, int x, int y, int *w, int *h)
 	return *w > 0 && *h > 0;
 }
 
-/* Queue a straight source-copy blit between two buffers (same coordinates) */
+/* Queue a VDMA format-converting copy between two buffers (same coordinates) */
 void
-wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst, int x, int y, int w, int h)
+wmt_ge_convert(WMTPtr wmt, WMTBO *src, WMTBO *dst, int x, int y, int w, int h)
 {
 	struct drm_wmt_ge_op *op;
 
@@ -175,15 +175,17 @@ wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst, int x, int y, int w, int h)
 	op = wmt_ge_next(wmt, dst, src);
 
 	memset(op, 0, sizeof(*op));
-	op->type = WMT_GE_OP_BLIT;
+	op->type = WMT_GE_OP_CONVERT;
 	op->rop = WMT_GE_ROP_SRC_COPY;
 	op->dst_handle = dst->handle;
+	op->dst_format = dst->format;
 	op->dst_pitch = dst->pitch;
 	op->dst_x = x;
 	op->dst_y = y;
 	op->width = w;
 	op->height = h;
 	op->src_handle = src->handle;
+	op->src_format = src->format;
 	op->src_pitch = src->pitch;
 	op->src_x = x;
 	op->src_y = y;
@@ -229,6 +231,7 @@ WMTSolid(PixmapPtr pPix, int x1, int y1, int x2, int y2)
 	op->type = WMT_GE_OP_FILL;
 	op->rop = wmt->op_rop;
 	op->dst_handle = wmt->op_dst_bo->handle;
+	op->dst_format = wmt->op_dst_bo->format;
 	op->dst_pitch = wmt->op_dst_pitch;
 	op->dst_x = x1;
 	op->dst_y = y1;
@@ -280,12 +283,14 @@ WMTCopy(PixmapPtr pDst, int srcX, int srcY, int dstX, int dstY, int w, int h)
 	op->type = WMT_GE_OP_BLIT;
 	op->rop = wmt->op_rop;
 	op->dst_handle = wmt->op_dst_bo->handle;
+	op->dst_format = wmt->op_dst_bo->format;
 	op->dst_pitch = wmt->op_dst_pitch;
 	op->dst_x = dstX;
 	op->dst_y = dstY;
 	op->width = w;
 	op->height = h;
 	op->src_handle = wmt->op_src_bo->handle;
+	op->src_format = wmt->op_src_bo->format;
 	op->src_pitch = wmt->op_src_pitch;
 	op->src_x = srcX;
 	op->src_y = srcY;
@@ -323,7 +328,7 @@ WMTCreatePixmap2(ScreenPtr pScreen, int width, int height, int depth,
 	if (!priv)
 		return NULL;
 
-	/* Bind root pixmap to screen shadow/scanout */
+	/* Bind root pixmap to screen shadow */
 	if (!wmt->screen_bound &&
 	    width == pScrn->virtualX && height == pScrn->virtualY) {
 		priv->bo = wmt->screen_bo;
@@ -333,7 +338,7 @@ WMTCreatePixmap2(ScreenPtr pScreen, int width, int height, int depth,
 		return priv;
 	}
 
-	bo = wmt_bo_create(wmt->fd, width, height);
+	bo = wmt_bo_create(wmt->fd, width, height, WMT_FORMAT);
 	if (!bo || !wmt_bo_map(wmt->fd, bo)) {
 		if (bo)
 			wmt_bo_destroy(wmt->fd, bo);
@@ -355,8 +360,7 @@ WMTDestroyPixmap(ScreenPtr pScreen, void *driverPriv)
 	if (!priv)
 		return;
 
-	if (priv->bo && priv->bo != wmt->scanout[0] && priv->bo != wmt->scanout[1] &&
-	    priv->bo != wmt->screen_bo) {
+	if (priv->bo && priv->bo != wmt->screen_bo) {
 		wmt_ge_flush(wmt);
 		wmt_bo_destroy(wmt->fd, priv->bo);
 	}
@@ -483,7 +487,6 @@ WMTExaInit(ScreenPtr pScreen)
 	exa->flags = EXA_OFFSCREEN_PIXMAPS | EXA_HANDLES_PIXMAPS | EXA_MIXED_PIXMAPS;
 	exa->maxX = WMT_GE_MAX_DIM;
 	exa->maxY = WMT_GE_MAX_DIM;
-	exa->maxPitchBytes = WMT_GE_MAX_DIM * WMT_BYTES_PP;
 	exa->pixmapOffsetAlign = 0;
 	exa->pixmapPitchAlign = 4;
 
@@ -506,17 +509,7 @@ WMTExaInit(ScreenPtr pScreen)
 	exa->UploadToScreen = WMTUploadToScreen;
 	exa->DownloadFromScreen = WMTDownloadFromScreen;
 
-	wmt->batch = malloc(WMT_GE_MAX_OPS * sizeof(struct drm_wmt_ge_op));
-	if (!wmt->batch) {
-		free(exa);
-		wmt->exa = NULL;
-		return FALSE;
-	}
-	wmt->batch_count = 0;
-
 	if (!exaDriverInit(pScreen, exa)) {
-		free(wmt->batch);
-		wmt->batch = NULL;
 		free(exa);
 		wmt->exa = NULL;
 		return FALSE;
@@ -530,8 +523,6 @@ WMTExaCloseScreen(ScreenPtr pScreen)
 {
 	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(pScreen));
 
-	free(wmt->batch);
-	wmt->batch = NULL;
 	free(wmt->exa);
 	wmt->exa = NULL;
 }

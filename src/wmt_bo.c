@@ -17,7 +17,7 @@
 #include "wmt.h"
 
 WMTBO *
-wmt_bo_create(int fd, int width, int height)
+wmt_bo_create(int fd, int width, int height, uint32_t format)
 {
 	struct drm_mode_create_dumb arg;
 	WMTBO *bo;
@@ -29,7 +29,7 @@ wmt_bo_create(int fd, int width, int height)
 	memset(&arg, 0, sizeof(arg));
 	arg.width = width;
 	arg.height = height;
-	arg.bpp = WMT_BPP;
+	arg.bpp = format == WMT_FORMAT ? WMT_BPP : WMT_SCANOUT_BPP;
 
 	if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &arg)) {
 		free(bo);
@@ -37,6 +37,7 @@ wmt_bo_create(int fd, int width, int height)
 	}
 
 	bo->handle = arg.handle;
+	bo->format = format;
 	bo->pitch = arg.pitch;
 	bo->size = arg.size;
 	bo->width = width;
@@ -47,11 +48,15 @@ wmt_bo_create(int fd, int width, int height)
 static Bool
 wmt_bo_add_fb(int fd, WMTBO *bo)
 {
+	uint32_t handles[4] = { bo->handle };
+	uint32_t pitches[4] = { bo->pitch };
+	uint32_t offsets[4] = { 0 };
+
 	if (bo->fb_id)
 		return TRUE;
 
-	if (drmModeAddFB(fd, bo->width, bo->height, WMT_DEPTH, WMT_BPP,
-			 bo->pitch, bo->handle, &bo->fb_id)) {
+	if (drmModeAddFB2(fd, bo->width, bo->height, bo->format, handles, pitches,
+			  offsets, &bo->fb_id, 0)) {
 		bo->fb_id = 0;
 		return FALSE;
 	}
@@ -61,7 +66,8 @@ wmt_bo_add_fb(int fd, WMTBO *bo)
 WMTBO *
 wmt_bo_new(int fd, int width, int height, Bool scanout)
 {
-	WMTBO *bo = wmt_bo_create(fd, width, height);
+	WMTBO *bo = wmt_bo_create(fd, width, height,
+				  scanout ? WMT_SCANOUT_FORMAT : WMT_FORMAT);
 
 	if (!bo)
 		return NULL;

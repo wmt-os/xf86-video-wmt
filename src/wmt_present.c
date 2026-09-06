@@ -62,6 +62,19 @@ WMTFlipDrain(WMTPtr wmt)
 	}
 }
 
+/* Expand a region of the shadow into a scanout buffer on the VDMA */
+static void
+wmt_convert_region(WMTPtr wmt, WMTBO *dst, RegionPtr region)
+{
+	BoxPtr box = RegionRects(region);
+	int n = RegionNumRects(region), i;
+
+	for (i = 0; i < n; i++)
+		wmt_ge_convert(wmt, wmt->screen_bo, dst, box[i].x1, box[i].y1,
+			       box[i].x2 - box[i].x1, box[i].y2 - box[i].y1);
+	wmt_ge_flush(wmt);
+}
+
 static void
 wmt_present(WMTPtr wmt)
 {
@@ -69,43 +82,37 @@ wmt_present(WMTPtr wmt)
 	int back = wmt->current ^ 1;
 	BoxRec bounds = { 0, 0, wmt->mode_w, wmt->mode_h };
 	RegionRec clip, copy;
-	BoxPtr box;
-	int n, i;
 
 	RegionInit(&clip, &bounds, 1);
-
 	RegionNull(&copy);
-	RegionUnion(&copy, damage, &wmt->flip_region);
-	RegionIntersect(&copy, &copy, &clip);
 
-	/* Copy damage region and schedule page flip */
-	box = RegionRects(&copy);
-	n = RegionNumRects(&copy);
-	for (i = 0; i < n; i++)
-		wmt_ge_blit(wmt, wmt->screen_bo, wmt->scanout[back], box[i].x1,
-			    box[i].y1, box[i].x2 - box[i].x1, box[i].y2 - box[i].y1);
-	wmt_ge_flush(wmt);
+	/* Convert current and prior damage, then flip to the back buffer */
+	if (wmt->tearfree) {
+		RegionUnion(&copy, damage, &wmt->flip_region);
+		RegionIntersect(&copy, &copy, &clip);
+		wmt_convert_region(wmt, wmt->scanout[back], &copy);
 
-	if (drmModePageFlip(wmt->fd, wmt->crtc_id, wmt->scanout[back]->fb_id,
-			    DRM_MODE_PAGE_FLIP_EVENT, wmt) == 0) {
-		wmt->flip_pending = TRUE;
-		RegionCopy(&wmt->flip_region, damage);
-	} else {
-		/* Flip failed (blanked): draw in-place and save damage */
+		if (drmModePageFlip(wmt->fd, wmt->crtc_id, wmt->scanout[back]->fb_id,
+				    DRM_MODE_PAGE_FLIP_EVENT, wmt) == 0) {
+			wmt->flip_pending = TRUE;
+			RegionCopy(&wmt->flip_region, damage);
+		}
+	}
+
+	/* Convert in place if not flipping */
+	if (!wmt->flip_pending) {
 		RegionIntersect(&copy, damage, &clip);
-		box = RegionRects(&copy);
-		n = RegionNumRects(&copy);
-		for (i = 0; i < n; i++)
-			wmt_ge_blit(wmt, wmt->screen_bo, wmt->scanout[wmt->current],
-				    box[i].x1, box[i].y1, box[i].x2 - box[i].x1,
-				    box[i].y2 - box[i].y1);
-		wmt_ge_flush(wmt);
-		RegionUnion(&wmt->flip_region, &wmt->flip_region, &copy);
+		wmt_convert_region(wmt, wmt->scanout[wmt->current], &copy);
+		RegionEmpty(&wmt->flip_region);
 	}
 
 	RegionUninit(&clip);
 	RegionUninit(&copy);
 	DamageEmpty(wmt->damage);
+
+	/* Without EXA there is no PrepareAccess to order CPU writes behind the VDMA */
+	if (!wmt->exa)
+		wmt_ge_sync(wmt, wmt->screen_bo);
 }
 
 static void
@@ -118,7 +125,7 @@ WMTBlockHandler(ScreenPtr pScreen, void *timeout)
 	(*pScreen->BlockHandler)(pScreen, timeout);
 	pScreen->BlockHandler = WMTBlockHandler;
 
-	if (pScrn->vtSema && wmt->tearfree && wmt->damage && !wmt->flip_pending &&
+	if (pScrn->vtSema && wmt->damage && !wmt->flip_pending &&
 	    !wmt->dpms_off && wmt->mode_h > 0 && RegionNotEmpty(DamageRegion(wmt->damage)))
 		wmt_present(wmt);
 	else
@@ -133,38 +140,31 @@ wmt_damage_destroyed(DamagePtr damage, void *closure)
 	wmt->damage = NULL;
 }
 
-void
+Bool
 WMTFlipInit(ScreenPtr pScreen)
 {
 	ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
 	WMTPtr wmt = WMTPTR(pScrn);
 
-	if (!wmt->exa) /* No GE: nothing to batch or present */
-		return;
+	/* Every frame reaches the panel through the shadow's damage */
+	RegionNull(&wmt->flip_region);
+	wmt->damage = DamageCreate(NULL, wmt_damage_destroyed, DamageReportNone, TRUE,
+				   pScreen, wmt);
+	if (!wmt->damage) {
+		xf86DrvMsg(pScrn->scrnIndex, X_ERROR, "Damage setup failed\n");
+		return FALSE;
+	}
+	DamageRegister(&pScreen->GetScreenPixmap(pScreen)->drawable, wmt->damage);
 
-	if (wmt->tearfree) {
-		RegionNull(&wmt->flip_region);
-		wmt->damage = DamageCreate(NULL, wmt_damage_destroyed,
-					   DamageReportNone, TRUE, pScreen, wmt);
-		if (!wmt->damage) {
-			xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-				   "TearFree setup failed; running without it\n");
-			wmt->tearfree = FALSE;
-		} else {
-			DamageRegister(&pScreen->GetScreenPixmap(pScreen)->drawable,
-				       wmt->damage);
-
-			if (!SetNotifyFd(wmt->fd, wmt_drm_notify, X_NOTIFY_READ, wmt)) {
-				xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
-					   "TearFree setup failed; running without it\n");
-				DamageDestroy(wmt->damage);
-				wmt->tearfree = FALSE;
-			}
-		}
+	if (!SetNotifyFd(wmt->fd, wmt_drm_notify, X_NOTIFY_READ, wmt)) {
+		xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
+			   "Flip event setup failed; running without TearFree\n");
+		wmt->tearfree = FALSE;
 	}
 
 	wmt->BlockHandler = pScreen->BlockHandler;
 	pScreen->BlockHandler = WMTBlockHandler;
+	return TRUE;
 }
 
 void
@@ -172,18 +172,12 @@ WMTFlipFini(ScreenPtr pScreen)
 {
 	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(pScreen));
 
-	if (!wmt->exa)
-		return;
-
 	wmt_ge_flush(wmt);
-
-	if (wmt->tearfree) {
-		WMTFlipDrain(wmt);
-		RemoveNotifyFd(wmt->fd);
-		if (wmt->damage)
-			DamageDestroy(wmt->damage);
-		RegionUninit(&wmt->flip_region);
-	}
+	WMTFlipDrain(wmt);
+	RemoveNotifyFd(wmt->fd);
+	if (wmt->damage)
+		DamageDestroy(wmt->damage);
+	RegionUninit(&wmt->flip_region);
 	if (wmt->BlockHandler) {
 		pScreen->BlockHandler = wmt->BlockHandler;
 		wmt->BlockHandler = NULL;

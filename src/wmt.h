@@ -15,18 +15,23 @@
 #include "damage.h"
 #include "regionstr.h"
 
+#include <drm_fourcc.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
 #include "wmt_drm_uapi.h"
 
-#define WMT_BPP				32
-#define WMT_DEPTH			24
+#define WMT_BPP				16
+#define WMT_DEPTH			16
 #define WMT_BYTES_PP		(WMT_BPP / 8)	/* Bytes per pixel */
+#define WMT_FORMAT			DRM_FORMAT_RGB565
+#define WMT_SCANOUT_BPP		32
+#define WMT_SCANOUT_FORMAT	DRM_FORMAT_XRGB8888
 
 /* GEM dumb buffer */
 typedef struct wmt_bo {
 	uint32_t			handle;				/* GEM handle */
+	uint32_t			format;				/* DRM pixel format */
 	uint32_t			pitch;				/* Row stride in bytes */
 	uint64_t			size;				/* Allocation size in bytes */
 	int					width;
@@ -54,7 +59,7 @@ typedef struct {
 	Bool				tearfree;			/* TearFree page-flipping enabled */
 
 	WMTBO				*scanout[2];		/* Front/back scanout buffers */
-	WMTBO				*screen_bo;			/* Root pixmap target (shadow or scanout) */
+	WMTBO				*screen_bo;			/* Root pixmap shadow */
 	int					current;			/* Displayed scanout index */
 	uint32_t			crtc_id;			/* CRTC ID for page flips */
 	int					mode_w, mode_h;		/* Screen dimensions */
@@ -93,7 +98,7 @@ typedef struct {
 #define WMT_PIXMAP_PRIV(pPix)	((WMTPixmapPriv *)exaGetPixmapDriverPrivate(pPix))
 
 /* wmt_bo.c */
-WMTBO	*wmt_bo_create(int fd, int width, int height);
+WMTBO	*wmt_bo_create(int fd, int width, int height, uint32_t format);
 WMTBO	*wmt_bo_new(int fd, int width, int height, Bool scanout);
 void	 wmt_bo_destroy(int fd, WMTBO *bo);
 void	*wmt_bo_map(int fd, WMTBO *bo);
@@ -108,11 +113,11 @@ Bool	 WMTExaInit(ScreenPtr pScreen);
 void	 WMTExaCloseScreen(ScreenPtr pScreen);
 void	 wmt_ge_flush(WMTPtr wmt);
 void	 wmt_ge_sync(WMTPtr wmt, WMTBO *bo);
-void	 wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst,
-		     int x, int y, int w, int h);
+void	 wmt_ge_convert(WMTPtr wmt, WMTBO *src, WMTBO *dst,
+			int x, int y, int w, int h);
 
 /* wmt_present.c */
-void	 WMTFlipInit(ScreenPtr pScreen);
+Bool	 WMTFlipInit(ScreenPtr pScreen);
 void	 WMTFlipFini(ScreenPtr pScreen);
 void	 WMTFlipDrain(WMTPtr wmt);
 

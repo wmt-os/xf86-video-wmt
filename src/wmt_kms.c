@@ -446,16 +446,13 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 
 	/* Allocate scanout and shadow buffers */
 	s0 = wmt_bo_new(wmt->fd, width, height, TRUE);
-	if (wmt->tearfree && s0) {
+	shadow = wmt_bo_new(wmt->fd, width, height, FALSE);
+	if (wmt->tearfree)
 		s1 = wmt_bo_new(wmt->fd, width, height, TRUE);
-		shadow = wmt_bo_new(wmt->fd, width, height, FALSE);
-	} else {
-		shadow = s0;
-	}
-	if (!s0 || (wmt->tearfree && (!s1 || !shadow))) {
-		if (s0) wmt_bo_destroy(wmt->fd, s0);
-		if (s1) wmt_bo_destroy(wmt->fd, s1);
-		if (shadow && shadow != s0) wmt_bo_destroy(wmt->fd, shadow);
+	if (!s0 || !shadow || (wmt->tearfree && !s1)) {
+		wmt_bo_destroy(wmt->fd, s0);
+		wmt_bo_destroy(wmt->fd, s1);
+		wmt_bo_destroy(wmt->fd, shadow);
 		return FALSE;
 	}
 
@@ -463,11 +460,10 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 	wmt->scanout[1] = s1;
 	wmt->screen_bo = shadow;
 	wmt->current = 0;
-	if (wmt->tearfree)
-		RegionEmpty(&wmt->flip_region);
+	RegionEmpty(&wmt->flip_region);
 	pScrn->virtualX = width;
 	pScrn->virtualY = height;
-	pScrn->displayWidth = s0->pitch / WMT_BYTES_PP;
+	pScrn->displayWidth = shadow->pitch / WMT_BYTES_PP;
 
 	root = pScreen->GetScreenPixmap(pScreen);
 	priv = wmt->exa ? WMT_PIXMAP_PRIV(root) : NULL;
@@ -486,10 +482,9 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 						crtc->x, crtc->y);
 	}
 
-	if (old[2] && old[2] != old[0])
-		wmt_bo_destroy(wmt->fd, old[2]);
-	if (old[0]) wmt_bo_destroy(wmt->fd, old[0]);
-	if (old[1]) wmt_bo_destroy(wmt->fd, old[1]);
+	wmt_bo_destroy(wmt->fd, old[2]);
+	wmt_bo_destroy(wmt->fd, old[0]);
+	wmt_bo_destroy(wmt->fd, old[1]);
 	return TRUE;
 }
 
