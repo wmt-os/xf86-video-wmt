@@ -10,7 +10,6 @@
 #include "config.h"
 #endif
 
-#include <errno.h>
 #include <poll.h>
 
 #include "xf86.h"

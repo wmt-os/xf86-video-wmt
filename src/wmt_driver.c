@@ -45,11 +45,13 @@ static void WMTFreeScreen(ScrnInfoPtr pScrn);
 typedef enum {
 	OPTION_ACCEL,
 	OPTION_TEARFREE,
+	OPTION_KMSDEV,
 } WMTOpts;
 
 static const OptionInfoRec WMTOptions[] = {
 	{ OPTION_ACCEL,		"Accel",	OPTV_BOOLEAN, {0}, FALSE },
 	{ OPTION_TEARFREE,	"TearFree",	OPTV_BOOLEAN, {0}, FALSE },
+	{ OPTION_KMSDEV,	"kmsdev",	OPTV_STRING,  {0}, FALSE },
 	{ -1,				NULL,		OPTV_NONE,    {0}, FALSE },
 };
 
@@ -61,8 +63,6 @@ WMTGetRec(ScrnInfoPtr pScrn)
 	if (pScrn->driverPrivate)
 		return TRUE;
 	pScrn->driverPrivate = xnfcalloc(1, sizeof(WMTRec));
-	if (!pScrn->driverPrivate)
-		return FALSE;
 	WMTPTR(pScrn)->fd = -1;
 	return TRUE;
 }
@@ -76,7 +76,6 @@ WMTFreeRec(ScrnInfoPtr pScrn)
 		return;
 	if (wmt->fd >= 0 && wmt->fd_owned)
 		close(wmt->fd);
-	free(wmt->kmsdev);
 	free(wmt->Options);
 	free(wmt);
 	pScrn->driverPrivate = NULL;
@@ -123,7 +122,6 @@ WMTOpenDRM(ScrnInfoPtr pScrn)
 	}
 
 	wmt->fd = fd;
-	wmt->kmsdev = path ? strdup(path) : NULL;
 	xf86DrvMsg(pScrn->scrnIndex, X_INFO, "Using DRM device %s (fd %d)\n",
 		   path ? path : "(server fd)", fd);
 	return TRUE;
@@ -146,6 +144,7 @@ WMTPreInit(ScrnInfoPtr pScrn, int flags)
 	if (!WMTGetRec(pScrn))
 		return FALSE;
 	wmt = WMTPTR(pScrn);
+	wmt->pScrn = pScrn;
 	wmt->pEnt = xf86GetEntityInfo(pScrn->entityList[0]);
 
 	pScrn->monitor = pScrn->confScreen->monitor;
@@ -294,7 +293,7 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 	wmt->CreateScreenResources = pScreen->CreateScreenResources;
 	pScreen->CreateScreenResources = WMTCreateScreenResources;
 
-	if (!WMTKMSScreenInit(pScreen))
+	if (!xf86CrtcScreenInit(pScreen))
 		return FALSE;
 
 	if (!miCreateDefColormap(pScreen))
@@ -444,10 +443,8 @@ WMTDriverFunc(ScrnInfoPtr pScrn, xorgDriverFuncOp op, void *data)
 		flag = (xorgHWFlags *)data;
 		*flag = HW_SKIP_CONSOLE;
 		return TRUE;
-#ifdef SUPPORTS_SERVER_FDS
 	case SUPPORTS_SERVER_FDS:
 		return TRUE;
-#endif
 	default:
 		return FALSE;
 	}

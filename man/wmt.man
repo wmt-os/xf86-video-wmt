@@ -37,8 +37,12 @@ flags are supported:
 Enable or disable GE acceleration.  Default: enabled.
 .TP
 .BI "Option \*qTearFree\*q \*q" boolean \*q
-Enable double-buffered, vblank-synchronised page flipping to eliminate
+Enable double-buffered, vblank-synchronized page flipping to eliminate
 tearing.  Default: enabled.
+.TP
+.BI "Option \*qkmsdev\*q \*q" string \*q
+The DRM device to open when the server does not provide one.
+Default: /dev/dri/card0.
 .SH "SEE ALSO"
 __xservername__(__appmansuffix__), __xconfigfile__(__filemansuffix__), Xserver(__appmansuffix__), X(__miscmansuffix__)
 .SH AUTHORS

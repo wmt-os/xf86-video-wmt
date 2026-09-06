@@ -1,4 +1,4 @@
-#  Copyright (C) 2026 Logan Russell <me@lrussell.net>
+# Copyright (C) 2026 Logan Russell <me@lrussell.net>
 
 # _ladir passes a dummy rpath to libtool so the thing will actually link
 # to a non-standard location.

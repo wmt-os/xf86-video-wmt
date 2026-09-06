@@ -174,12 +174,6 @@ wmt_dpms_set(xf86CrtcPtr crtc, int mode)
 }
 
 static void
-wmt_crtc_dpms(xf86CrtcPtr crtc, int mode)
-{
-	wmt_dpms_set(crtc, mode);
-}
-
-static void
 wmt_crtc_gamma_set(xf86CrtcPtr crtc, CARD16 *red, CARD16 *green, CARD16 *blue,
 		   int size)
 {
@@ -195,7 +189,7 @@ wmt_crtc_destroy(xf86CrtcPtr crtc)
 }
 
 static const xf86CrtcFuncsRec wmt_crtc_funcs = {
-	.dpms = wmt_crtc_dpms,
+	.dpms = wmt_dpms_set,
 	.set_mode_major = wmt_crtc_set_mode_major,
 	.gamma_set = wmt_crtc_gamma_set,
 	.destroy = wmt_crtc_destroy,
@@ -300,7 +294,7 @@ wmt_output_mode_valid(xf86OutputPtr output, DisplayModePtr mode)
 
 		wmt_mode_from_kmode(output->scrn, &conn->modes[i], &kmode);
 		equal = xf86ModesEqual(&kmode, mode);
-		free(kmode.name);
+		free((void *)kmode.name);
 		if (equal)
 			return MODE_OK;
 	}
@@ -439,6 +433,8 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 	ScreenPtr pScreen = pScrn->pScreen;
 	WMTBO *old[3] = { wmt->scanout[0], wmt->scanout[1], wmt->screen_bo };
 	WMTBO *s0, *s1 = NULL, *shadow;
+	WMTPixmapPriv *priv;
+	PixmapPtr root;
 	int i;
 
 	if (width == pScrn->virtualX && height == pScrn->virtualY)
@@ -473,17 +469,14 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 	pScrn->virtualY = height;
 	pScrn->displayWidth = s0->pitch / WMT_BYTES_PP;
 
-	if (pScreen) {
-		PixmapPtr root = pScreen->GetScreenPixmap(pScreen);
-		WMTPixmapPriv *priv = wmt->exa ? WMT_PIXMAP_PRIV(root) : NULL;
-
-		if (priv) {
-			priv->bo = shadow;
-			priv->pitch = shadow->pitch;
-		}
-		pScreen->ModifyPixmapHeader(root, width, height, -1, -1,
-					    shadow->pitch, priv ? NULL : shadow->map);
+	root = pScreen->GetScreenPixmap(pScreen);
+	priv = wmt->exa ? WMT_PIXMAP_PRIV(root) : NULL;
+	if (priv) {
+		priv->bo = shadow;
+		priv->pitch = shadow->pitch;
 	}
+	pScreen->ModifyPixmapHeader(root, width, height, -1, -1,
+				    shadow->pitch, priv ? NULL : shadow->map);
 
 	for (i = 0; i < config->num_crtc; i++) {
 		xf86CrtcPtr crtc = config->crtc[i];
@@ -522,9 +515,7 @@ WMTKMSPreInit(ScrnInfoPtr pScrn)
 		return FALSE;
 	}
 
-	xf86CrtcSetSizeRange(pScrn, 8, 8,
-			     res->max_width ? res->max_width : WMT_GE_MAX_DIM,
-			     res->max_height ? res->max_height : WMT_GE_MAX_DIM);
+	xf86CrtcSetSizeRange(pScrn, 8, 8, res->max_width, res->max_height);
 
 	for (i = 0; i < res->count_crtcs; i++) {
 		xf86CrtcPtr crtc = xf86CrtcCreate(pScrn, &wmt_crtc_funcs);
@@ -575,14 +566,6 @@ WMTKMSPreInit(ScrnInfoPtr pScrn)
 
 	xf86InitialConfiguration(pScrn, FALSE);
 	return TRUE;
-}
-
-/* ScreenInit */
-
-Bool
-WMTKMSScreenInit(ScreenPtr pScreen)
-{
-	return xf86CrtcScreenInit(pScreen);
 }
 
 /* VT Switch */

@@ -20,8 +20,6 @@
 
 #include "wmt_drm_uapi.h"
 
-#define WMT_DRIVER_NAME		"wmt"
-
 #define WMT_BPP				32
 #define WMT_DEPTH			24
 #define WMT_BYTES_PP		(WMT_BPP / 8)	/* Bytes per pixel */
@@ -48,7 +46,7 @@ typedef struct {
 typedef struct {
 	int					fd;					/* DRM master fd */
 	Bool				fd_owned;			/* True if opened by driver */
-	char				*kmsdev;			/* DRM device path */
+	ScrnInfoPtr			pScrn;
 	EntityInfoPtr		pEnt;
 	OptionInfoPtr		Options;
 
@@ -65,9 +63,8 @@ typedef struct {
 	/* EXA */
 	ExaDriverPtr		exa;
 	Bool				screen_bound;		/* Root pixmap bound to screen_bo */
-	struct wmt_ge_op	*batch;				/* Op accumulation buffer */
+	struct drm_wmt_ge_op	*batch;			/* Op accumulation buffer */
 	unsigned			batch_count;
-	unsigned			batch_max;
 	WMTBO				*batch_dst_bo;		/* Destination buffer of queued batch */
 	WMTBO				*batch_src_bo;		/* Source buffer of queued batch */
 	uint32_t			last_submit_seqno;	/* Seqno of last submitted batch */
@@ -100,11 +97,9 @@ WMTBO	*wmt_bo_create(int fd, int width, int height);
 WMTBO	*wmt_bo_new(int fd, int width, int height, Bool scanout);
 void	 wmt_bo_destroy(int fd, WMTBO *bo);
 void	*wmt_bo_map(int fd, WMTBO *bo);
-Bool	 wmt_bo_add_fb(int fd, WMTBO *bo);
 
 /* wmt_kms.c */
 Bool	 WMTKMSPreInit(ScrnInfoPtr pScrn);
-Bool	 WMTKMSScreenInit(ScreenPtr pScreen);
 Bool	 WMTKMSEnterVT(ScrnInfoPtr pScrn);
 void	 WMTKMSLeaveVT(ScrnInfoPtr pScrn);
 

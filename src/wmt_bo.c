@@ -10,11 +10,8 @@
 #include "config.h"
 #endif
 
-#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
 #include <sys/mman.h>
 
 #include "wmt.h"
@@ -45,6 +42,20 @@ wmt_bo_create(int fd, int width, int height)
 	bo->width = width;
 	bo->height = height;
 	return bo;
+}
+
+static Bool
+wmt_bo_add_fb(int fd, WMTBO *bo)
+{
+	if (bo->fb_id)
+		return TRUE;
+
+	if (drmModeAddFB(fd, bo->width, bo->height, WMT_DEPTH, WMT_BPP,
+			 bo->pitch, bo->handle, &bo->fb_id)) {
+		bo->fb_id = 0;
+		return FALSE;
+	}
+	return TRUE;
 }
 
 WMTBO *
@@ -82,20 +93,6 @@ wmt_bo_map(int fd, WMTBO *bo)
 
 	bo->map = map;
 	return map;
-}
-
-Bool
-wmt_bo_add_fb(int fd, WMTBO *bo)
-{
-	if (bo->fb_id)
-		return TRUE;
-
-	if (drmModeAddFB(fd, bo->width, bo->height, WMT_DEPTH, WMT_BPP,
-			 bo->pitch, bo->handle, &bo->fb_id)) {
-		bo->fb_id = 0;
-		return FALSE;
-	}
-	return TRUE;
 }
 
 void

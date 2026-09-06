@@ -40,7 +40,7 @@ wmt_copy_rop(int alu)
 static int
 wmt_ge_wait(WMTPtr wmt, uint32_t seqno)
 {
-	struct wmt_ge_wait w = { .seqno = seqno, .timeout_us = WMT_GE_WAIT_MAX_US };
+	struct drm_wmt_ge_wait w = { .seqno = seqno, .timeout_us = WMT_GE_WAIT_MAX_US };
 
 	return drmIoctl(wmt->fd, DRM_IOCTL_WMT_GE_WAIT, &w);
 }
@@ -49,16 +49,17 @@ wmt_ge_wait(WMTPtr wmt, uint32_t seqno)
 void
 wmt_ge_flush(WMTPtr wmt)
 {
-	struct wmt_ge_submit req;
-	struct wmt_ge_op *o;
+	struct drm_wmt_ge_submit req;
+	struct drm_wmt_ge_op *o;
 
-	if (wmt->batch_count == 0)
+	if (!wmt->batch_count)
 		return;
 
 	memset(&req, 0, sizeof(req));
 	req.ops = (uint64_t)(uintptr_t)wmt->batch;
 	req.num_ops = wmt->batch_count;
 
+	/* drmIoctl() would retry EAGAIN itself and hide the ring-full signal */
 	for (;;) {
 		if (ioctl(wmt->fd, DRM_IOCTL_WMT_GE_SUBMIT, &req) == 0) {
 			wmt->last_submit_seqno = req.out_seqno;
@@ -79,7 +80,7 @@ wmt_ge_flush(WMTPtr wmt)
 			continue;
 
 		o = &wmt->batch[0];
-		xf86DrvMsgVerb(0, X_WARNING, 0,
+		xf86DrvMsgVerb(wmt->pScrn->scrnIndex, X_WARNING, 0,
 			       "GE submit of %u ops failed: %s "
 			       "[op0 t=%u rop=%#x dst=%u pitch=%u @%u,%u %ux%u "
 			       "src=%u pitch=%u @%u,%u]\n",
@@ -105,7 +106,8 @@ wmt_ge_sync(WMTPtr wmt, WMTBO *bo)
 		return;
 
 	if (wmt_ge_wait(wmt, bo->last_seqno) != 0) {
-		xf86DrvMsgVerb(0, X_WARNING, 0, "GE wait for seqno %u failed: %s\n",
+		xf86DrvMsgVerb(wmt->pScrn->scrnIndex, X_WARNING, 0,
+			       "GE wait for seqno %u failed: %s\n",
 			       bo->last_seqno, strerror(errno));
 		return;
 	}
@@ -124,21 +126,22 @@ wmt_ge_drain_global(WMTPtr wmt)
 		return;
 
 	if (wmt_ge_wait(wmt, wmt->last_submit_seqno) != 0) {
-		xf86DrvMsgVerb(0, X_WARNING, 0, "GE wait for seqno %u failed: %s\n",
+		xf86DrvMsgVerb(wmt->pScrn->scrnIndex, X_WARNING, 0,
+			       "GE wait for seqno %u failed: %s\n",
 			       wmt->last_submit_seqno, strerror(errno));
 		return;
 	}
 	wmt->last_synced_seqno = wmt->last_submit_seqno;
 }
 
-static struct wmt_ge_op *
+static struct drm_wmt_ge_op *
 wmt_ge_next(WMTPtr wmt, WMTBO *dst, WMTBO *src)
 {
 	if (wmt->batch_count &&
 	    (dst != wmt->batch_dst_bo ||
 	     (src && wmt->batch_src_bo && src != wmt->batch_src_bo)))
 		wmt_ge_flush(wmt);
-	if (wmt->batch_count >= wmt->batch_max)
+	if (wmt->batch_count >= WMT_GE_MAX_OPS)
 		wmt_ge_flush(wmt);
 
 	wmt->batch_dst_bo = dst;
@@ -164,7 +167,7 @@ wmt_clip_to_bo(WMTBO *bo, int x, int y, int *w, int *h)
 void
 wmt_ge_blit(WMTPtr wmt, WMTBO *src, WMTBO *dst, int x, int y, int w, int h)
 {
-	struct wmt_ge_op *op;
+	struct drm_wmt_ge_op *op;
 
 	if (!wmt_clip_to_bo(dst, x, y, &w, &h) || !wmt_clip_to_bo(src, x, y, &w, &h))
 		return;
@@ -216,7 +219,7 @@ WMTSolid(PixmapPtr pPix, int x1, int y1, int x2, int y2)
 {
 	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(pPix->drawable.pScreen));
 	int w = x2 - x1, h = y2 - y1;
-	struct wmt_ge_op *op;
+	struct drm_wmt_ge_op *op;
 
 	if (!wmt_clip_to_bo(wmt->op_dst_bo, x1, y1, &w, &h))
 		return;
@@ -266,7 +269,7 @@ static void
 WMTCopy(PixmapPtr pDst, int srcX, int srcY, int dstX, int dstY, int w, int h)
 {
 	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(pDst->drawable.pScreen));
-	struct wmt_ge_op *op;
+	struct drm_wmt_ge_op *op;
 
 	if (!wmt_clip_to_bo(wmt->op_dst_bo, dstX, dstY, &w, &h) ||
 	    !wmt_clip_to_bo(wmt->op_src_bo, srcX, srcY, &w, &h))
@@ -311,7 +314,7 @@ WMTCreatePixmap2(ScreenPtr pScreen, int width, int height, int depth,
 	WMTPixmapPriv *priv;
 	WMTBO *bo;
 
-	if (!wmt->accel || bitsPerPixel != WMT_BPP || depth != WMT_DEPTH ||
+	if (bitsPerPixel != WMT_BPP || depth != WMT_DEPTH ||
 	    width <= 0 || height <= 0 ||
 	    width > WMT_GE_MAX_DIM || height > WMT_GE_MAX_DIM)
 		return NULL;
@@ -388,7 +391,7 @@ WMTPixmapIsOffscreen(PixmapPtr pPix)
 {
 	WMTPixmapPriv *priv = WMT_PIXMAP_PRIV(pPix);
 
-	return priv && priv->bo != NULL;
+	return priv && priv->bo;
 }
 
 static Bool
@@ -503,8 +506,7 @@ WMTExaInit(ScreenPtr pScreen)
 	exa->UploadToScreen = WMTUploadToScreen;
 	exa->DownloadFromScreen = WMTDownloadFromScreen;
 
-	wmt->batch_max = WMT_GE_MAX_OPS;
-	wmt->batch = malloc(wmt->batch_max * sizeof(struct wmt_ge_op));
+	wmt->batch = malloc(WMT_GE_MAX_OPS * sizeof(struct drm_wmt_ge_op));
 	if (!wmt->batch) {
 		free(exa);
 		wmt->exa = NULL;

@@ -28,7 +28,7 @@
 #define WMT_GE_ROP_PAT_COPY	0xf0
 
 /* GE Operation */
-struct wmt_ge_op {
+struct drm_wmt_ge_op {
 	uint32_t type;
 	uint32_t rop;
 	uint32_t dst_handle;
@@ -45,7 +45,7 @@ struct wmt_ge_op {
 };
 
 /* GE Submit Request */
-struct wmt_ge_submit {
+struct drm_wmt_ge_submit {
 	uint64_t ops;
 	uint32_t num_ops;
 	uint32_t flags;
@@ -54,17 +54,17 @@ struct wmt_ge_submit {
 };
 
 /* GE Wait Request */
-struct wmt_ge_wait {
-	uint32_t seqno;
-	uint32_t timeout_us;
+struct drm_wmt_ge_wait {
+	uint32_t seqno;			/* 0 waits for submit ring space */
+	uint32_t timeout_us;	/* 0 for the default */
 };
 
-#define DRM_WMT_GE_SUBMIT	0x00
-#define DRM_WMT_GE_WAIT		0x01
+#define DRM_WMT_GE_SUBMIT	0x0
+#define DRM_WMT_GE_WAIT		0x1
 
 #define DRM_IOCTL_WMT_GE_SUBMIT \
-	DRM_IOWR(DRM_COMMAND_BASE + DRM_WMT_GE_SUBMIT, struct wmt_ge_submit)
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_WMT_GE_SUBMIT, struct drm_wmt_ge_submit)
 #define DRM_IOCTL_WMT_GE_WAIT \
-	DRM_IOW(DRM_COMMAND_BASE + DRM_WMT_GE_WAIT, struct wmt_ge_wait)
+	DRM_IOW(DRM_COMMAND_BASE + DRM_WMT_GE_WAIT, struct drm_wmt_ge_wait)
 
 #endif /* WMT_DRM_UAPI_H */
