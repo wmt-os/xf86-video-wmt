@@ -125,7 +125,11 @@ WMTBlockHandler(ScreenPtr pScreen, void *timeout)
 	(*pScreen->BlockHandler)(pScreen, timeout);
 	pScreen->BlockHandler = WMTBlockHandler;
 
-	if (pScrn->vtSema && wmt->damage && !wmt->flip_pending &&
+	/* Reap the lease of a lessee that died without FreeLease */
+	if (wmt->lease && wmt_lease_gone(wmt))
+		wmt_lease_terminate(wmt->lease);
+
+	if (pScrn->vtSema && wmt->damage && !wmt->flip_pending && !wmt->lease &&
 	    !wmt->dpms_off && wmt->mode_h > 0 && RegionNotEmpty(DamageRegion(wmt->damage)))
 		wmt_present(wmt);
 	else

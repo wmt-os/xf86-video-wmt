@@ -88,6 +88,9 @@ typedef struct {
 	RegionRec		flip_region;		/* Damage owed to the alternate buffer */
 	Bool			flip_pending;		/* Page flip event outstanding */
 
+	RRLeasePtr		lease;			/* Active RandR 1.6 lease */
+	uint32_t		lessee_id;		/* DRM lessee id of that lease */
+
 	/* Wrapped functions */
 	CloseScreenProcPtr		CloseScreen;
 	CreateScreenResourcesProcPtr	CreateScreenResources;
@@ -107,6 +110,8 @@ void	*wmt_bo_map(int fd, WMTBO *bo);
 Bool	 WMTKMSPreInit(ScrnInfoPtr pScrn);
 Bool	 WMTKMSEnterVT(ScrnInfoPtr pScrn);
 void	 WMTKMSLeaveVT(ScrnInfoPtr pScrn);
+Bool	 wmt_lease_gone(WMTPtr wmt);
+void	 wmt_lease_terminate(RRLeasePtr lease);
 
 /* wmt_exa.c */
 Bool	 WMTExaInit(ScreenPtr pScreen);

@@ -396,7 +396,12 @@ WMTEnterVT(ScrnInfoPtr pScrn)
 static void
 WMTLeaveVT(ScrnInfoPtr pScrn)
 {
-	WMTFlipDrain(WMTPTR(pScrn));
+	WMTPtr wmt = WMTPTR(pScrn);
+
+	WMTFlipDrain(wmt);
+	/* Revoking a lease needs the DRM master that LeaveVT drops */
+	if (wmt->lease)
+		wmt_lease_terminate(wmt->lease);
 	WMTKMSLeaveVT(pScrn);
 	pScrn->vtSema = FALSE;
 }

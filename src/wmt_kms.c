@@ -188,12 +188,71 @@ wmt_crtc_destroy(xf86CrtcPtr crtc)
 	free(crtc->driver_private);
 }
 
+static void
+wmt_crtc_hide_cursor(xf86CrtcPtr crtc)
+{
+	/* xf86_crtc_show_cursor() calls this hook unchecked at lease end */
+}
+
 static const xf86CrtcFuncsRec wmt_crtc_funcs = {
 	.dpms = wmt_dpms_set,
 	.set_mode_major = wmt_crtc_set_mode_major,
 	.gamma_set = wmt_crtc_gamma_set,
 	.destroy = wmt_crtc_destroy,
+	.hide_cursor = wmt_crtc_hide_cursor,
 };
+
+/* RandR 1.6 Leases */
+
+Bool
+wmt_lease_gone(WMTPtr wmt)
+{
+	drmModeLesseeListPtr lessees = drmModeListLessees(wmt->fd);
+	Bool gone;
+
+	/* A failed listing leaves the lease in place */
+	gone = lessees && lessees->count == 0;
+	free(lessees);
+	return gone;
+}
+
+void
+wmt_lease_terminate(RRLeasePtr lease)
+{
+	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(lease->screen));
+
+	/* Revoking a dead lessee fails; the lease ends either way */
+	drmModeRevokeLease(wmt->fd, wmt->lessee_id);
+	wmt->lease = NULL;
+	xf86CrtcLeaseTerminated(lease);
+}
+
+static int
+wmt_lease_create(RRLeasePtr lease, int *fd)
+{
+	WMTPtr wmt = WMTPTR(xf86ScreenToScrn(lease->screen));
+	WMTCrtcPriv *cp;
+	WMTOutputPriv *op;
+	uint32_t objects[2];
+
+	if (lease->numCrtcs != 1 || lease->numOutputs != 1)
+		return BadMatch;
+
+	cp = ((xf86CrtcPtr)lease->crtcs[0]->devPrivate)->driver_private;
+	op = ((xf86OutputPtr)lease->outputs[0]->devPrivate)->driver_private;
+	objects[0] = cp->crtc_id;
+	objects[1] = op->output_id;
+
+	/* Settle outstanding flips before the lessee takes the CRTC */
+	WMTFlipDrain(wmt);
+	*fd = drmModeCreateLease(wmt->fd, objects, 2, O_CLOEXEC, &wmt->lessee_id);
+	if (*fd < 0)
+		return BadMatch;
+
+	wmt->lease = lease;
+	xf86CrtcLeaseStarted(lease);
+	return Success;
+}
 
 /* Backlight */
 
@@ -490,6 +549,8 @@ wmt_xf86crtc_resize(ScrnInfoPtr pScrn, int width, int height)
 
 static const xf86CrtcConfigFuncsRec wmt_xf86crtc_config_funcs = {
 	.resize = wmt_xf86crtc_resize,
+	.create_lease = wmt_lease_create,
+	.terminate_lease = wmt_lease_terminate,
 };
 
 /* PreInit */
