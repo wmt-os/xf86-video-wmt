@@ -52,7 +52,7 @@ static const OptionInfoRec WMTOptions[] = {
 	{ OPTION_ACCEL,		"Accel",	OPTV_BOOLEAN, {0}, FALSE },
 	{ OPTION_TEARFREE,	"TearFree",	OPTV_BOOLEAN, {0}, FALSE },
 	{ OPTION_KMSDEV,	"kmsdev",	OPTV_STRING,  {0}, FALSE },
-	{ -1,				NULL,		OPTV_NONE,    {0}, FALSE },
+	{ -1,			NULL,		OPTV_NONE,    {0}, FALSE },
 };
 
 /* Helpers */

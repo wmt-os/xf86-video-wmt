@@ -22,8 +22,8 @@ wmt_solid_rop(int alu)
 {
 	switch (alu) {
 	case GXcopy:	return WMT_GE_ROP_PAT_COPY;
-	case GXxor:		return WMT_GE_ROP_PAT_XOR;
-	default:		return -1;
+	case GXxor:	return WMT_GE_ROP_PAT_XOR;
+	default:	return -1;
 	}
 }
 
@@ -32,8 +32,8 @@ wmt_copy_rop(int alu)
 {
 	switch (alu) {
 	case GXcopy:	return WMT_GE_ROP_SRC_COPY;
-	case GXxor:		return WMT_GE_ROP_SRC_XOR;
-	default:		return -1;
+	case GXxor:	return WMT_GE_ROP_SRC_XOR;
+	default:	return -1;
 	}
 }
 

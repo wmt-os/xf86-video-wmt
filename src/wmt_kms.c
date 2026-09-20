@@ -33,11 +33,11 @@ typedef struct {
 } WMTCrtcPriv;
 
 typedef struct {
-	WMTPtr		wmt;
-	uint32_t	output_id;
+	WMTPtr			wmt;
+	uint32_t		output_id;
 	drmModeConnectorPtr	conn;
-	char		bl_path[128];	/* sysfs brightness file */
-	INT32		bl_max;
+	char			bl_path[128];	/* sysfs brightness file */
+	INT32			bl_max;
 } WMTOutputPriv;
 
 /* Mode Conversion */

@@ -21,80 +21,80 @@
 
 #include "wmt_drm_uapi.h"
 
-#define WMT_BPP				16
-#define WMT_DEPTH			16
+#define WMT_BPP			16
+#define WMT_DEPTH		16
 #define WMT_BYTES_PP		(WMT_BPP / 8)	/* Bytes per pixel */
-#define WMT_FORMAT			DRM_FORMAT_RGB565
+#define WMT_FORMAT		DRM_FORMAT_RGB565
 #define WMT_SCANOUT_BPP		32
 #define WMT_SCANOUT_FORMAT	DRM_FORMAT_XRGB8888
 
 /* GEM dumb buffer */
 typedef struct wmt_bo {
-	uint32_t			handle;				/* GEM handle */
-	uint32_t			format;				/* DRM pixel format */
-	uint32_t			pitch;				/* Row stride in bytes */
-	uint64_t			size;				/* Allocation size in bytes */
-	int					width;
-	int					height;
-	uint32_t			fb_id;				/* KMS framebuffer ID, 0 if none */
-	void				*map;				/* CPU mapping pointer, NULL if unmapped */
-	uint32_t			last_seqno;			/* Seqno of last GE batch to touch buffer */
-	uint32_t			last_synced;		/* Highest seqno already synced */
+	uint32_t	handle;		/* GEM handle */
+	uint32_t	format;		/* DRM pixel format */
+	uint32_t	pitch;		/* Row stride in bytes */
+	uint64_t	size;		/* Allocation size in bytes */
+	int		width;
+	int		height;
+	uint32_t	fb_id;		/* KMS framebuffer ID, 0 if none */
+	void		*map;		/* CPU mapping pointer, NULL if unmapped */
+	uint32_t	last_seqno;	/* Seqno of last GE batch to touch buffer */
+	uint32_t	last_synced;	/* Highest seqno already synced */
 } WMTBO;
 
 /* Pixmap private */
 typedef struct {
-	WMTBO				*bo;				/* GE buffer object */
-	int					pitch;				/* Row stride in bytes */
+	WMTBO		*bo;		/* GE buffer object */
+	int		pitch;		/* Row stride in bytes */
 } WMTPixmapPriv;
 
 typedef struct {
-	int					fd;					/* DRM master fd */
-	Bool				fd_owned;			/* True if opened by driver */
-	ScrnInfoPtr			pScrn;
+	int			fd;			/* DRM master fd */
+	Bool			fd_owned;		/* True if opened by driver */
+	ScrnInfoPtr		pScrn;
 	EntityInfoPtr		pEnt;
 	OptionInfoPtr		Options;
 
-	Bool				accel;				/* 2D acceleration enabled */
-	Bool				tearfree;			/* TearFree page-flipping enabled */
+	Bool			accel;			/* 2D acceleration enabled */
+	Bool			tearfree;		/* TearFree page-flipping enabled */
 
-	WMTBO				*scanout[2];		/* Front/back scanout buffers */
-	WMTBO				*screen_bo;			/* Root pixmap shadow */
-	int					current;			/* Displayed scanout index */
-	uint32_t			crtc_id;			/* CRTC ID for page flips */
-	int					mode_w, mode_h;		/* Screen dimensions */
-	Bool				dpms_off;			/* Screen blanked by DPMS */
+	WMTBO			*scanout[2];		/* Front/back scanout buffers */
+	WMTBO			*screen_bo;		/* Root pixmap shadow */
+	int			current;		/* Displayed scanout index */
+	uint32_t		crtc_id;		/* CRTC ID for page flips */
+	int			mode_w, mode_h;		/* Screen dimensions */
+	Bool			dpms_off;		/* Screen blanked by DPMS */
 
 	/* EXA */
 	ExaDriverPtr		exa;
-	Bool				screen_bound;		/* Root pixmap bound to screen_bo */
+	Bool			screen_bound;		/* Root pixmap bound to screen_bo */
 	struct drm_wmt_ge_op	*batch;			/* Op accumulation buffer */
-	unsigned			batch_count;
-	WMTBO				*batch_dst_bo;		/* Destination buffer of queued batch */
-	WMTBO				*batch_src_bo;		/* Source buffer of queued batch */
-	uint32_t			last_submit_seqno;	/* Seqno of last submitted batch */
-	uint32_t			last_synced_seqno;	/* Highest seqno already synced */
+	unsigned		batch_count;
+	WMTBO			*batch_dst_bo;		/* Destination buffer of queued batch */
+	WMTBO			*batch_src_bo;		/* Source buffer of queued batch */
+	uint32_t		last_submit_seqno;	/* Seqno of last submitted batch */
+	uint32_t		last_synced_seqno;	/* Highest seqno already synced */
 
 	/* Render state */
-	WMTBO				*op_dst_bo;
-	uint32_t			op_dst_pitch;
-	uint32_t			op_rop;
-	uint32_t			op_fg;
-	WMTBO				*op_src_bo;
-	uint32_t			op_src_pitch;
+	WMTBO			*op_dst_bo;
+	uint32_t		op_dst_pitch;
+	uint32_t		op_rop;
+	uint32_t		op_fg;
+	WMTBO			*op_src_bo;
+	uint32_t		op_src_pitch;
 
 	/* Page flips */
-	DamagePtr			damage;				/* Damage region tracking */
-	RegionRec			flip_region;		/* Damage owed to the alternate buffer */
-	Bool				flip_pending;		/* Page flip event outstanding */
+	DamagePtr		damage;			/* Damage region tracking */
+	RegionRec		flip_region;		/* Damage owed to the alternate buffer */
+	Bool			flip_pending;		/* Page flip event outstanding */
 
 	/* Wrapped functions */
-	CloseScreenProcPtr				CloseScreen;
+	CloseScreenProcPtr		CloseScreen;
 	CreateScreenResourcesProcPtr	CreateScreenResources;
-	ScreenBlockHandlerProcPtr		BlockHandler;
+	ScreenBlockHandlerProcPtr	BlockHandler;
 } WMTRec, *WMTPtr;
 
-#define WMTPTR(scrn)			((WMTPtr)((scrn)->driverPrivate))
+#define WMTPTR(scrn)		((WMTPtr)((scrn)->driverPrivate))
 #define WMT_PIXMAP_PRIV(pPix)	((WMTPixmapPriv *)exaGetPixmapDriverPrivate(pPix))
 
 /* wmt_bo.c */
