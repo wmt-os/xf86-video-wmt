@@ -17,22 +17,12 @@ The GE is a ROP3 fill/blit engine with no per-pixel alpha. The driver uses its c
 
 ## Building
 
-### Standard autotools
-
 Requires: `xserver-xorg-dev libdrm-dev xutils-dev automake libtool pkgconf`
 
 ```sh
 ./autogen.sh
 make
 sudo make install
-```
-
-### Cross-build deb package
-
-Requires: `mmdebstrap qemu-user-binfmt uidmap` (Build dependencies are automatically resolved inside the chroot.)
-
-```sh
-./build-deb.sh
 ```
 
 ## License
