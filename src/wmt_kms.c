@@ -225,6 +225,8 @@ wmt_lease_terminate(RRLeasePtr lease)
 	drmModeRevokeLease(wmt->fd, wmt->lessee_id);
 	wmt->lease = NULL;
 	xf86CrtcLeaseTerminated(lease);
+	/* xf86DPMSSet skips leased CRTCs, re-apply last mode requested by X */
+	xf86DPMSSet(wmt->pScrn, wmt->dpms_mode, 0);
 }
 
 static int
@@ -243,6 +245,8 @@ wmt_lease_create(RRLeasePtr lease, int *fd)
 	objects[0] = cp->crtc_id;
 	objects[1] = op->output_id;
 
+	/* The lessee flips on the running mode, which DPMS off tears down */
+	wmt_dpms_set(lease->crtcs[0]->devPrivate, DPMSModeOn);
 	/* Settle outstanding flips before the lessee takes the CRTC */
 	WMTFlipDrain(wmt);
 	*fd = drmModeCreateLease(wmt->fd, objects, 2, O_CLOEXEC, &wmt->lessee_id);

@@ -40,6 +40,7 @@ static Bool WMTEnterVT(ScrnInfoPtr pScrn);
 static void WMTLeaveVT(ScrnInfoPtr pScrn);
 static Bool WMTSwitchMode(ScrnInfoPtr pScrn, DisplayModePtr mode);
 static void WMTAdjustFrame(ScrnInfoPtr pScrn, int x, int y);
+static void WMTDPMSSet(ScrnInfoPtr pScrn, int mode, int flags);
 static void WMTFreeScreen(ScrnInfoPtr pScrn);
 
 typedef enum {
@@ -315,7 +316,7 @@ WMTScreenInit(ScreenPtr pScreen, int argc, char **argv)
 				 CMAP_RELOAD_ON_MODE_SWITCH))
 		return FALSE;
 
-	xf86DPMSInit(pScreen, xf86DPMSSet, 0);
+	xf86DPMSInit(pScreen, WMTDPMSSet, 0);
 
 	pScrn->vtSema = TRUE;
 
@@ -425,6 +426,13 @@ WMTAdjustFrame(ScrnInfoPtr pScrn, int x, int y)
 	crtc = output->crtc;
 	if (crtc && crtc->enabled)
 		crtc->funcs->set_mode_major(crtc, &crtc->mode, crtc->rotation, x, y);
+}
+
+static void
+WMTDPMSSet(ScrnInfoPtr pScrn, int mode, int flags)
+{
+	WMTPTR(pScrn)->dpms_mode = mode;
+	xf86DPMSSet(pScrn, mode, flags);
 }
 
 static void

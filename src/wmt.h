@@ -64,6 +64,7 @@ typedef struct {
 	uint32_t		crtc_id;		/* CRTC ID for page flips */
 	int			mode_w, mode_h;		/* Screen dimensions */
 	Bool			dpms_off;		/* Screen blanked by DPMS */
+	int			dpms_mode;		/* Last DPMS mode requested by X */
 
 	/* EXA */
 	ExaDriverPtr		exa;
