@@ -27,4 +27,4 @@ sudo make install
 
 ## License
 
-MIT/X11 - see [COPYING](COPYING).
+MIT - see [COPYING](COPYING).

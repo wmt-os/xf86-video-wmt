@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * WonderMedia WM8505 X.Org Video Driver
  *
